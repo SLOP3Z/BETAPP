@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { CircleDot, History, KeyRound, ListChecks } from "lucide-react";
 import { loadFixtures, predictFixture, type Prediction } from "@/lib/football.functions";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -66,12 +67,12 @@ function Home() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [picked, setPicked] = useState<number[]>([]);
-  const [remaining, setRemaining] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [saveFeedback, setSaveFeedback] = useState<{ message: string; isError: boolean } | null>(null);
   const [busy, setBusy] = useState<"load" | "predict" | null>(null);
   const [error, setError] = useState("");
   const [results, setResults] = useState<SavedPick[]>([]);
+  const [tab, setTab] = useState<"keys" | "matches" | "history">("matches");
 
   useEffect(() => {
     const parsed = readStored<{ footballKey?: string; geminiKey?: string; fdKey?: string; model?: string }>(KEYS);
@@ -109,7 +110,6 @@ function Home() {
       const data = await loadFixtures({ data: { apiKey: footballKey.trim(), date } });
       setFixtures(data.fixtures);
       setPicked([]);
-      setRemaining(data.remaining);
       setNote(
         data.fixtures.length
           ? `${data.fixtures.length} partidos de ligas grandes (de ${data.scanned} en el día). 1 llamada.`
@@ -186,6 +186,12 @@ function Home() {
     return [...map.entries()];
   }, [fixtures]);
 
+  const tabs = [
+    { id: "keys" as const, label: "APIs", Icon: KeyRound },
+    { id: "matches" as const, label: "Partidos", Icon: ListChecks },
+    { id: "history" as const, label: "Historial", Icon: History },
+  ];
+
   function toggle(id: number) {
     setPicked((cur) => {
       if (cur.includes(id)) return cur.filter((x) => x !== id);
@@ -195,173 +201,228 @@ function Home() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-      <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold tracking-wide text-pitch">Plan gratuito</p>
-          <h1 className="font-display text-4xl text-ink">Marcador</h1>
-          <p className="mt-1 max-w-xl text-muted">
-            Jornada de las grandes ligas, historial directo y un pronóstico en JSON. Las claves se guardan en este navegador y se envían a sus proveedores al consultar.
-          </p>
-        </div>
-        {remaining != null && (
-          <p className="rounded-full bg-pitch-deep px-4 py-2 text-sm text-bg">
-            API-Football: {remaining} llamadas hoy
-          </p>
-        )}
+    <main className="mx-auto min-h-screen max-w-3xl px-4 pb-28 pt-5 sm:px-6 sm:pb-8">
+      <header className="mb-6 flex items-center gap-3">
+        <span className="grid size-10 place-items-center rounded-full bg-pitch text-bg" aria-hidden="true">
+          <CircleDot size={23} strokeWidth={2.2} />
+        </span>
+        <h1 className="font-display text-2xl font-bold text-ink">BETAPP</h1>
       </header>
 
-      <section className="grid gap-4 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2 sm:p-6">
-        <label className="block text-sm font-semibold">
-          API-Football
-          <input
-            type="password"
-            autoComplete="off"
-            value={footballKey}
-            onChange={(e) => setFootballKey(e.target.value)}
-            placeholder="x-apisports-key"
-            className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
-          />
-        </label>
-        <label className="block text-sm font-semibold">
-          Gemini
-          <input
-            type="password"
-            autoComplete="off"
-            value={geminiKey}
-            onChange={(e) => setGeminiKey(e.target.value)}
-            placeholder="AI Studio API key"
-            className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
-          />
-        </label>
-        <label className="block text-sm font-semibold sm:col-span-2">
-          football-data.org (resultados de esta temporada, gratis)
-          <input
-            type="password"
-            autoComplete="off"
-            value={fdKey}
-            onChange={(e) => setFdKey(e.target.value)}
-            placeholder="X-Auth-Token"
-            className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
-          />
-        </label>
-        <label className="block text-sm font-semibold sm:col-span-2">
-          Modelo Gemini (el free de Flash-Lite suele aguantar más)
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
-          />
-        </label>
-        <div className="sm:col-span-2">
-          <button
-            type="button"
-            onClick={saveKeys}
-            className="rounded-xl bg-pitch px-4 py-3 font-semibold text-bg"
-          >
-            Guardar claves
-          </button>
-          {saveFeedback && (
-            <p
-              role={saveFeedback.isError ? "alert" : "status"}
-              className={`mt-3 text-sm ${saveFeedback.isError ? "text-warn" : "text-muted"}`}
+      <nav
+        aria-label="Secciones principales"
+        role="tablist"
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:static sm:mb-6 sm:border-0 sm:bg-transparent sm:p-0"
+      >
+        <div className="mx-auto grid max-w-3xl grid-cols-3 gap-1 py-2 sm:py-0">
+          {tabs.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              id={`${id}-tab`}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              aria-controls={`${id}-panel`}
+              onClick={() => setTab(id)}
+              className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-semibold sm:min-h-11 sm:flex-row sm:justify-start sm:gap-2 sm:px-4 sm:text-sm ${
+                tab === id ? "bg-pitch text-bg sm:bg-pitch/10 sm:text-pitch" : "text-muted hover:bg-pitch/5"
+              }`}
             >
-              {saveFeedback.message}
-            </p>
-          )}
+              <Icon size={19} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
         </div>
-      </section>
+      </nav>
 
-      <section className="mt-6 flex flex-wrap items-end gap-3">
-        <label className="text-sm font-semibold">
-          Fecha
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="mt-1 block rounded-xl border border-line bg-surface px-3 py-3"
-          />
-        </label>
-        <button
-          type="button"
-          disabled={busy !== null || !footballKey}
-          onClick={onLoad}
-          className="rounded-xl bg-pitch-deep px-4 py-3 font-semibold text-bg disabled:opacity-50"
-        >
-          {busy === "load" ? "Cargando…" : "Cargar jornada"}
-        </button>
-        <button
-          type="button"
-          disabled={busy !== null || picked.length === 0 || !geminiKey || !fdKey}
-          onClick={onPredict}
-          className="rounded-xl border border-pitch bg-surface px-4 py-3 font-semibold text-pitch disabled:opacity-50"
-        >
-          {busy === "predict" ? "Pronosticando…" : `Pronosticar (${picked.length}/5)`}
-        </button>
-      </section>
-
-      {note && <p className="mt-4 text-sm text-muted">{note}</p>}
-      {error && (
-        <p className="mt-4 rounded-xl border border-warn bg-surface px-4 py-3 text-sm text-warn">{error}</p>
+      {tab === "keys" && (
+        <section id="keys-panel" role="tabpanel" aria-labelledby="keys-tab" className="space-y-4">
+          <div>
+            <h2 className="font-display text-2xl">APIs</h2>
+            <p className="mt-1 text-sm text-muted">
+              Guarda las claves en este navegador una vez. Solo tendrás que volver a introducirlas si borras sus datos o cambias de dispositivo.
+            </p>
+          </div>
+          <div className="grid gap-4 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2 sm:p-6">
+            <label className="block text-sm font-semibold">
+              API-Football
+              <input
+                type="password"
+                autoComplete="off"
+                value={footballKey}
+                onChange={(e) => setFootballKey(e.target.value)}
+                placeholder="x-apisports-key"
+                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
+              />
+            </label>
+            <label className="block text-sm font-semibold">
+              Gemini
+              <input
+                type="password"
+                autoComplete="off"
+                value={geminiKey}
+                onChange={(e) => setGeminiKey(e.target.value)}
+                placeholder="AI Studio API key"
+                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
+              />
+            </label>
+            <label className="block text-sm font-semibold sm:col-span-2">
+              football-data.org
+              <input
+                type="password"
+                autoComplete="off"
+                value={fdKey}
+                onChange={(e) => setFdKey(e.target.value)}
+                placeholder="X-Auth-Token"
+                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
+              />
+            </label>
+            <label className="block text-sm font-semibold sm:col-span-2">
+              Modelo Gemini
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
+              />
+            </label>
+            <div className="sm:col-span-2">
+              <button
+                type="button"
+                onClick={saveKeys}
+                className="w-full rounded-xl bg-pitch px-4 py-3 font-semibold text-bg sm:w-auto"
+              >
+                Guardar claves
+              </button>
+              {saveFeedback && (
+                <p
+                  role={saveFeedback.isError ? "alert" : "status"}
+                  className={`mt-3 text-sm ${saveFeedback.isError ? "text-warn" : "text-muted"}`}
+                >
+                  {saveFeedback.message}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
       )}
 
-      <div className="mt-6 space-y-6">
-        {groups.map(([league, rows]) => (
-          <section key={league}>
-            <h2 className="mb-2 font-display text-xl">{league}</h2>
-            <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
-              {rows.map((f) => {
-                const on = picked.includes(f.id);
-                const kick = new Date(f.date).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
-                return (
-                  <li key={f.id}>
-                    <button
-                      type="button"
-                      onClick={() => toggle(f.id)}
-                      className={`flex w-full items-center gap-3 px-4 py-3 text-left ${on ? "bg-pitch/10" : ""}`}
-                    >
-                      <span
-                        className={`grid size-5 place-items-center rounded border ${on ? "border-pitch bg-pitch text-bg" : "border-line"}`}
-                      >
-                        {on ? "✓" : ""}
-                      </span>
-                      <span className="w-14 shrink-0 text-sm text-muted">{kick}</span>
-                      <span className="font-semibold">
-                        {f.home} <span className="font-normal text-muted">vs</span> {f.away}
-                      </span>
-                      <span className="ml-auto text-xs text-muted">{f.status}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ))}
-      </div>
+      {tab === "matches" && (
+        <section id="matches-panel" role="tabpanel" aria-labelledby="matches-tab" className="space-y-5">
+          <div>
+            <h2 className="font-display text-2xl">Partidos</h2>
+            {!footballKey && (
+              <p className="mt-1 text-sm text-muted">
+                Añade las claves en APIs para cargar la jornada y generar pronósticos.
+              </p>
+            )}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+            <label className="block text-sm font-semibold">
+              Fecha
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="mt-1 block min-h-12 w-full rounded-xl border border-line bg-surface px-3 py-3"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy !== null || !footballKey}
+              onClick={onLoad}
+              className="min-h-12 rounded-xl bg-pitch-deep px-4 py-3 font-semibold text-bg disabled:opacity-50"
+            >
+              {busy === "load" ? "Cargando…" : "Cargar jornada"}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null || picked.length === 0 || !geminiKey || !fdKey}
+              onClick={onPredict}
+              className="min-h-12 rounded-xl border border-pitch bg-surface px-4 py-3 font-semibold text-pitch disabled:opacity-50"
+            >
+              {busy === "predict" ? "Pronosticando…" : `Pronosticar (${picked.length}/5)`}
+            </button>
+          </div>
 
-      {results.length > 0 && (
-        <section className="mt-10">
-          <h2 className="font-display text-2xl">Pronósticos guardados</h2>
-          <ul className="mt-3 grid gap-3">
-            {results.map((row) => (
-              <li key={row.fixture.id} className="rounded-2xl border border-line bg-surface p-4">
-                <p className="text-sm text-muted">
-                  {row.fixture.country} · {row.fixture.league}
-                </p>
-                <p className="font-display text-xl">
-                  {row.fixture.home} – {row.fixture.away}
-                </p>
-                <p className="mt-2 text-lg font-semibold text-pitch">
-                  Pick {row.prediction.pick} · confianza {row.prediction.confidence}
-                </p>
-                <p className="text-sm">
-                  1 {row.prediction.probs?.home}% · X {row.prediction.probs?.draw}% · 2 {row.prediction.probs?.away}%
-                  {" · "}Over 2.5 {row.prediction.over25}% · BTTS {row.prediction.btts}%
-                </p>
-                <p className="mt-2 text-sm text-muted">{row.prediction.reason}</p>
-              </li>
-            ))}
-          </ul>
+          {note && <p role="status" className="text-sm text-muted">{note}</p>}
+          {error && (
+            <p role="alert" className="rounded-xl border border-warn bg-surface px-4 py-3 text-sm text-warn">
+              {error}
+            </p>
+          )}
+
+          {fixtures.length === 0 ? (
+            <p className="rounded-2xl border border-line bg-surface px-4 py-6 text-sm text-muted">
+              {busy === "load" ? "Buscando partidos…" : "Carga una jornada para ver los partidos disponibles."}
+            </p>
+          ) : (
+            <div className="space-y-6">
+              {groups.map(([league, rows]) => (
+                <section key={league}>
+                  <h3 className="mb-2 font-display text-xl">{league}</h3>
+                  <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
+                    {rows.map((f) => {
+                      const on = picked.includes(f.id);
+                      const kick = new Date(f.date).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
+                      return (
+                        <li key={f.id}>
+                          <button
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() => toggle(f.id)}
+                            className={`flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left ${on ? "bg-pitch/10" : ""}`}
+                          >
+                            <span
+                              className={`grid size-5 shrink-0 place-items-center rounded border ${on ? "border-pitch bg-pitch text-bg" : "border-line"}`}
+                            >
+                              {on ? "✓" : ""}
+                            </span>
+                            <span className="w-12 shrink-0 text-sm text-muted">{kick}</span>
+                            <span className="min-w-0 flex-1 text-sm font-semibold sm:text-base">
+                              {f.home} <span className="font-normal text-muted">vs</span> {f.away}
+                            </span>
+                            <span className="shrink-0 text-xs text-muted">{f.status}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "history" && (
+        <section id="history-panel" role="tabpanel" aria-labelledby="history-tab">
+          <h2 className="font-display text-2xl">Historial</h2>
+          {results.length === 0 ? (
+            <p className="mt-4 rounded-2xl border border-line bg-surface px-4 py-6 text-sm text-muted">
+              Todavía no hay pronósticos guardados.
+            </p>
+          ) : (
+            <ul className="mt-4 grid gap-3">
+              {results.map((row) => (
+                <li key={row.fixture.id} className="rounded-2xl border border-line bg-surface p-4">
+                  <p className="text-sm text-muted">
+                    {row.fixture.country} · {row.fixture.league}
+                  </p>
+                  <p className="font-display text-xl">
+                    {row.fixture.home} – {row.fixture.away}
+                  </p>
+                  <p className="mt-2 text-lg font-semibold text-pitch">
+                    Pick {row.prediction.pick} · confianza {row.prediction.confidence}
+                  </p>
+                  <p className="text-sm">
+                    1 {row.prediction.probs?.home}% · X {row.prediction.probs?.draw}% · 2 {row.prediction.probs?.away}%
+                    {" · "}Over 2.5 {row.prediction.over25}% · BTTS {row.prediction.btts}%
+                  </p>
+                  <p className="mt-2 text-sm text-muted">{row.prediction.reason}</p>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
     </main>
