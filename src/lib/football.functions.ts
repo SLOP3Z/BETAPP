@@ -1,13 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
+import {
+  buildMarketCandidates,
+  type MarketCandidate,
+  type PlayerSeasonStats,
+} from "./football-markets";
+import { TRACKED_COMPETITION_IDS } from "./football-competitions";
 
 const FOOTBALL = "https://v3.football.api-sports.io";
 const REQUEST_TIMEOUT_MS = 45_000;
-const TOP = new Set([39, 140, 135, 78, 61, 2]);
-
 type FixtureRow = {
   id: number;
   date: string;
   leagueId: number;
+  season: number;
   league: string;
   country: string;
   round: string;
@@ -50,6 +55,10 @@ function parseFixture(value: unknown): FixtureRow | null {
     id: fixture.id,
     date: fixture.date,
     leagueId: league.id,
+    season:
+      typeof league.season === "number"
+        ? league.season
+        : new Date(fixture.date).getUTCFullYear(),
     league: league.name,
     country: typeof league.country === "string" ? league.country : "Desconocido",
     round: typeof league.round === "string" ? league.round : "",
@@ -70,6 +79,7 @@ async function football(path: string, key: string) {
     errors?: unknown;
     response?: unknown;
     results?: number;
+    paging?: { current?: number; total?: number };
   };
   const remaining = res.headers.get("x-ratelimit-requests-remaining");
   if (!res.ok || (body.errors && Object.keys(body.errors as object).length)) {
@@ -114,7 +124,7 @@ export const loadFixtures = createServerFn({ method: "POST" })
     const rows = Array.isArray(body.response) ? body.response : [];
     const fixtures = rows
       .map(parseFixture)
-      .filter((fixture): fixture is FixtureRow => fixture !== null && TOP.has(fixture.leagueId))
+      .filter((fixture): fixture is FixtureRow => fixture !== null && TRACKED_COMPETITION_IDS.has(fixture.leagueId))
       .sort((a, b) => a.date.localeCompare(b.date));
     return { fixtures, remaining, scanned: rows.length };
   });
@@ -126,9 +136,10 @@ export type Prediction = {
   btts: number;
   confidence: number;
   reason: string;
+  recommendations: MarketCandidate[];
 };
 
-function parsePrediction(value: unknown): Prediction {
+function parsePrediction(value: unknown, candidates: MarketCandidate[]): Prediction {
   if (!isRecord(value) || !isRecord(value.probs)) {
     throw new Error("Gemini devolvió un pronóstico con un formato no válido.");
   }
@@ -144,6 +155,15 @@ function parsePrediction(value: unknown): Prediction {
     throw new Error("Gemini devolvió un pronóstico incompleto o fuera de rango.");
   }
 
+  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const recommendationIds = Array.isArray(value.bestMarketIds)
+    ? value.bestMarketIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const recommendations = [...new Set(recommendationIds)]
+    .map((id) => candidateById.get(id))
+    .filter((candidate): candidate is MarketCandidate => candidate !== undefined)
+    .slice(0, 3);
+
   return {
     pick: value.pick,
     probs: { home: home as number, draw: draw as number, away: away as number },
@@ -151,19 +171,84 @@ function parsePrediction(value: unknown): Prediction {
     btts: value.btts as number,
     confidence: value.confidence as number,
     reason: value.reason,
+    recommendations,
   };
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function nestedRecord(value: unknown, key: string): Record<string, unknown> | null {
+  if (!isRecord(value) || !isRecord(value[key])) return null;
+  return value[key] as Record<string, unknown>;
+}
+
+function sumPlayerMetric(
+  statistics: unknown[],
+  section: string,
+  field: string,
+): number | undefined {
+  const values = statistics
+    .map((stat) => numberField(nestedRecord(stat, section)?.[field]))
+    .filter((value): value is number => value !== undefined);
+  return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
+}
+
+function parsePlayerRows(value: unknown, team: string): PlayerSeasonStats[] {
+  if (!Array.isArray(value)) return [];
+  const players: PlayerSeasonStats[] = [];
+  for (const row of value) {
+    if (!isRecord(row) || !isRecord(row.player) || !Array.isArray(row.statistics)) continue;
+    const appearances = sumPlayerMetric(row.statistics, "games", "appearences");
+    if (typeof row.player.id !== "number" || typeof row.player.name !== "string" || !appearances) continue;
+
+    players.push({
+      id: row.player.id,
+      name: row.player.name,
+      team,
+      appearances,
+      goals: sumPlayerMetric(row.statistics, "goals", "total"),
+      shots: sumPlayerMetric(row.statistics, "shots", "total"),
+      shotsOnTarget: sumPlayerMetric(row.statistics, "shots", "on"),
+      foulsCommitted: sumPlayerMetric(row.statistics, "fouls", "committed"),
+      foulsDrawn: sumPlayerMetric(row.statistics, "fouls", "drawn"),
+      yellowCards: sumPlayerMetric(row.statistics, "cards", "yellow"),
+    });
+  }
+  return players;
+}
+
+async function loadTeamPlayerStats(
+  apiKey: string,
+  fixture: FixtureRow,
+  teamId: number,
+  teamName: string,
+): Promise<PlayerSeasonStats[]> {
+  const query = `team=${teamId}&season=${fixture.season}`;
+  const first = await football(`/players?${query}&page=1`, apiKey);
+  const players = parsePlayerRows(first.body.response, teamName);
+  const pageCount = Math.min(first.body.paging?.total ?? 1, 2);
+  if (pageCount > 1) {
+    const second = await football(`/players?${query}&page=2`, apiKey);
+    players.push(...parsePlayerRows(second.body.response, teamName));
+  }
+  return players;
 }
 
 export const predictFixture = createServerFn({ method: "POST" })
   .validator(
     (data: {
+      apiKey: string;
       geminiKey: string;
       model: string;
       fdKey: string;
       fixture: FixtureRow;
     }) => {
-      if (!data?.geminiKey || !data?.fdKey || !data?.fixture?.id) {
-        throw new Error("Faltan la clave de Gemini o la de football-data.org.");
+      if (!data?.apiKey || !data?.geminiKey || !data?.fixture?.id) {
+        throw new Error("Faltan las claves necesarias para consultar y analizar el partido.");
       }
       return data;
     },
@@ -171,18 +256,59 @@ export const predictFixture = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { fixture } = data;
     const code = LEAGUE_CODE[fixture.leagueId];
-    if (!code) {
-      throw new Error("Esa copa no está en el plan gratis de football-data.org.");
+    const warnings: string[] = [];
+    let matches: FdMatch[];
+    let formSource: string;
+    if (code && data.fdKey.trim()) {
+      try {
+        matches = await finishedMatches(data.fdKey, code);
+        formSource = "football-data.org, temporada en curso";
+      } catch {
+        matches = await recentApiMatches(data.apiKey, fixture);
+        formSource = "API-Football, últimos 8 partidos";
+        warnings.push("football-data.org no devolvió la forma de esta competición; se usaron los últimos partidos de cada equipo.");
+      }
+    } else {
+      matches = await recentApiMatches(data.apiKey, fixture);
+      formSource = "API-Football, últimos 8 partidos";
     }
-    const matches = await finishedMatches(data.fdKey, code);
     const brief = {
       match: `${fixture.home} vs ${fixture.away}`,
       league: `${fixture.country} · ${fixture.league}`,
-      source: "football-data.org, temporada en curso",
+      source: formSource,
       h2h: h2hFrom(matches, fixture.home, fixture.away),
       home: formFrom(matches, fixture.home),
       away: formFrom(matches, fixture.away),
     };
+
+    const [homePlayersResult, awayPlayersResult] = await Promise.allSettled([
+      loadTeamPlayerStats(data.apiKey, fixture, fixture.homeId, fixture.home),
+      loadTeamPlayerStats(data.apiKey, fixture, fixture.awayId, fixture.away),
+    ]);
+    const players = [
+      ...(homePlayersResult.status === "fulfilled" ? homePlayersResult.value : []),
+      ...(awayPlayersResult.status === "fulfilled" ? awayPlayersResult.value : []),
+    ];
+    if (homePlayersResult.status === "rejected") {
+      warnings.push(`No se pudieron consultar las estadísticas de jugadores de ${fixture.home}.`);
+    }
+    if (awayPlayersResult.status === "rejected") {
+      warnings.push(`No se pudieron consultar las estadísticas de jugadores de ${fixture.away}.`);
+    }
+    const markets = buildMarketCandidates({
+      homeTeam: fixture.home,
+      awayTeam: fixture.away,
+      homeForm: { played: brief.home.played, goalsFor: brief.home.gf, goalsAgainst: brief.home.ga },
+      awayForm: { played: brief.away.played, goalsFor: brief.away.gf, goalsAgainst: brief.away.ga },
+      players,
+    });
+    const marketContext = markets.map(({ id, title, selection, probability, evidence }) => ({
+      id,
+      title,
+      selection,
+      probability,
+      evidence,
+    }));
 
     const model = data.model || "gemini-3.5-flash-lite";
     const res = await fetch(
@@ -196,7 +322,7 @@ export const predictFixture = createServerFn({ method: "POST" })
             {
               parts: [
                 {
-                  text: `Eres un analista. Usa SOLO estos datos. Responde JSON con keys pick (1|X|2), probs {home,draw,away} sumando 100, over25 (0-100), btts (0-100), confidence (0-100), reason (máximo 2 frases en español).\n${JSON.stringify(brief)}`,
+                  text: `Eres un analista de fútbol. Usa exclusivamente los datos recibidos. Devuelve pick (1|X|2), probs {home,draw,away} sumando 100, over25 (0-100), btts (0-100), confidence (0-100), reason (máximo 2 frases en español) y bestMarketIds (hasta 3 IDs elegidos literalmente de candidates). Elige los mercados con mejor respaldo estadístico, con variedad si hay evidencia suficiente. No inventes jugadores, mercados, datos ni IDs. Si los datos no bastan, devuelve una lista vacía. Las probabilidades de candidates son estimaciones, no cuotas ni garantías.\n${JSON.stringify({ brief, candidates: marketContext })}`,
                 },
               ],
             },
@@ -220,8 +346,9 @@ export const predictFixture = createServerFn({ method: "POST" })
                 btts: { type: "NUMBER" },
                 confidence: { type: "NUMBER" },
                 reason: { type: "STRING" },
+                bestMarketIds: { type: "ARRAY", items: { type: "STRING" } },
               },
-              required: ["pick", "probs", "over25", "btts", "confidence", "reason"],
+              required: ["pick", "probs", "over25", "btts", "confidence", "reason", "bestMarketIds"],
             },
             temperature: 0.2,
           },
@@ -243,10 +370,11 @@ export const predictFixture = createServerFn({ method: "POST" })
     } catch {
       throw new Error("Gemini devolvió una respuesta que no es JSON válido.");
     }
-    const parsed = parsePrediction(response);
+    const parsed = parsePrediction(response, markets);
     return {
       prediction: parsed,
       brief,
+      warnings,
     };
   });
 
@@ -262,6 +390,55 @@ async function finishedMatches(token: string, code: string) {
   const matches = body.matches ?? [];
   fdCache.set(code, { matches, expiresAt: Date.now() + FD_CACHE_TTL_MS });
   return matches;
+}
+
+function parseApiFixtureHistory(value: unknown): FdMatch[] {
+  if (!Array.isArray(value)) return [];
+  const matches: FdMatch[] = [];
+  for (const row of value) {
+    if (!isRecord(row)) continue;
+    const fixture = row.fixture;
+    const teams = row.teams;
+    const goals = row.goals;
+    if (!isRecord(fixture) || !isRecord(teams) || !isRecord(goals)) continue;
+    const home = teams.home;
+    const away = teams.away;
+    if (
+      !isRecord(home) ||
+      !isRecord(away) ||
+      typeof fixture.date !== "string" ||
+      typeof home.name !== "string" ||
+      typeof away.name !== "string" ||
+      typeof goals.home !== "number" ||
+      typeof goals.away !== "number"
+    ) {
+      continue;
+    }
+    matches.push({
+      utcDate: fixture.date,
+      status: "FINISHED",
+      homeTeam: { name: home.name, shortName: home.name },
+      awayTeam: { name: away.name, shortName: away.name },
+      score: { fullTime: { home: goals.home, away: goals.away } },
+    });
+  }
+  return matches;
+}
+
+async function recentApiMatches(apiKey: string, fixture: FixtureRow): Promise<FdMatch[]> {
+  const [home, away] = await Promise.all([
+    football(`/fixtures?team=${fixture.homeId}&last=8`, apiKey),
+    football(`/fixtures?team=${fixture.awayId}&last=8`, apiKey),
+  ]);
+  const unique = new Map<string, FdMatch>();
+  for (const match of [
+    ...parseApiFixtureHistory(home.body.response),
+    ...parseApiFixtureHistory(away.body.response),
+  ]) {
+    const key = `${match.utcDate}|${match.homeTeam?.name}|${match.awayTeam?.name}`;
+    unique.set(key, match);
+  }
+  return [...unique.values()];
 }
 
 function sameTeam(label: string | undefined, query: string) {
