@@ -3,7 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Marcador";
+const APP_NAME = "BETAPP";
 const LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
 
 export const Route = createRootRoute({
