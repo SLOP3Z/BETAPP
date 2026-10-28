@@ -12,7 +12,6 @@ type SavedPick = {
   fixture: Fixture;
   prediction: Prediction;
   at: string;
-  warnings?: string[];
 };
 
 const KEYS = "marcador-keys";
@@ -138,7 +137,6 @@ function Home() {
     const next = [...results];
     const failedIds: number[] = [];
     const failures: string[] = [];
-    const warnings: string[] = [];
     let successful = 0;
     let storageFailed = false;
     try {
@@ -156,12 +154,10 @@ function Home() {
               fixture,
             },
           });
-          warnings.push(...out.warnings);
           const row: SavedPick = {
             fixture,
             prediction: out.prediction,
             at: new Date().toISOString(),
-            warnings: out.warnings,
           };
           const idx = next.findIndex((r) => r.fixture.id === id);
           if (idx >= 0) next[idx] = row;
@@ -180,9 +176,7 @@ function Home() {
         ? `${successful} partido(s) listos. Los fallidos siguen seleccionados para reintentar.`
         : storageFailed
           ? "Pronóstico listo, pero el navegador no permitió guardar el historial."
-          : warnings.length
-            ? `Listo con avisos: ${warnings.join(" ")}`
-            : "Listo. Los mercados se estiman con forma reciente y estadísticas de temporada.");
+          : "Listo. Los mercados se estiman con la forma actual de los equipos.");
       setPicked(failedIds);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falló el pronóstico.");
@@ -257,7 +251,7 @@ function Home() {
           <div>
             <h2 className="font-display text-2xl">APIs</h2>
             <p className="mt-1 text-sm text-muted">
-              API-Football y Gemini son necesarias. football-data.org es opcional y aporta forma de liga cuando está disponible.
+              API-Football carga partidos y jugadores; Gemini genera pronósticos; football-data.org aporta la forma de la temporada actual.
             </p>
           </div>
           <div className="grid gap-4 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2 sm:p-6">
@@ -284,7 +278,7 @@ function Home() {
               />
             </label>
             <label className="block text-sm font-semibold sm:col-span-2">
-              football-data.org (opcional)
+              football-data.org
               <input
                 type="password"
                 autoComplete="off"
@@ -327,9 +321,9 @@ function Home() {
         <section id="matches-panel" role="tabpanel" aria-labelledby="matches-tab" className="space-y-5">
           <div>
             <h2 className="font-display text-2xl">Partidos</h2>
-            {!footballKey && (
+            {(!footballKey || !geminiKey || !fdKey) && (
               <p className="mt-1 text-sm text-muted">
-                Añade API-Football y Gemini en APIs para cargar partidos y generar pronósticos.
+                Añade las claves de API-Football, Gemini y football-data.org en APIs para generar pronósticos actuales.
               </p>
             )}
           </div>
@@ -353,7 +347,7 @@ function Home() {
             </button>
             <button
               type="button"
-              disabled={busy !== null || picked.length === 0 || !footballKey || !geminiKey}
+              disabled={busy !== null || picked.length === 0 || !footballKey || !geminiKey || !fdKey}
               onClick={onPredict}
               className="min-h-12 rounded-xl border border-pitch bg-surface px-4 py-3 font-semibold text-pitch disabled:opacity-50"
             >
@@ -362,7 +356,7 @@ function Home() {
           </div>
 
           <p className="text-xs text-muted">
-            En copas y Segunda se usan los últimos 8 partidos de cada equipo. Un pronóstico puede consumir 2–6 llamadas de API-Football; las estimaciones no incluyen cuotas ni confirman titulares.
+            La forma se consulta en football-data.org para la temporada del partido. Las estadísticas de jugadores se incluyen solo si API-Football permite acceder a esa temporada; sin datos actuales, se omiten.
           </p>
 
           {note && <p role="status" className="text-sm text-muted">{note}</p>}
@@ -463,9 +457,6 @@ function Home() {
                       No hay mercados con suficiente muestra para recomendar en este partido.
                     </p>
                   )}
-                  {row.warnings?.map((warning) => (
-                    <p key={warning} className="mt-2 text-xs text-warn">{warning}</p>
-                  ))}
                 </li>
               ))}
             </ul>

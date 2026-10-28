@@ -2,7 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import {
   buildMarketCandidates,
   type MarketCandidate,
-  type PlayerSeasonStats,
 } from "./football-markets";
 import { TRACKED_COMPETITION_IDS } from "./football-competitions";
 
@@ -18,8 +17,6 @@ type FixtureRow = {
   round: string;
   home: string;
   away: string;
-  homeId: number;
-  awayId: number;
   status: string;
 };
 
@@ -43,9 +40,7 @@ function parseFixture(value: unknown): FixtureRow | null {
     typeof fixture.date !== "string" ||
     typeof league.id !== "number" ||
     typeof league.name !== "string" ||
-    typeof home.id !== "number" ||
     typeof home.name !== "string" ||
-    typeof away.id !== "number" ||
     typeof away.name !== "string"
   ) {
     return null;
@@ -64,8 +59,6 @@ function parseFixture(value: unknown): FixtureRow | null {
     round: typeof league.round === "string" ? league.round : "",
     home: home.name,
     away: away.name,
-    homeId: home.id,
-    awayId: away.id,
     status: isRecord(status) && typeof status.short === "string" ? status.short : "",
   };
 }
@@ -79,7 +72,6 @@ async function football(path: string, key: string) {
     errors?: unknown;
     response?: unknown;
     results?: number;
-    paging?: { current?: number; total?: number };
   };
   const remaining = res.headers.get("x-ratelimit-requests-remaining");
   if (!res.ok || (body.errors && Object.keys(body.errors as object).length)) {
@@ -175,69 +167,6 @@ function parsePrediction(value: unknown, candidates: MarketCandidate[]): Predict
   };
 }
 
-function numberField(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
-
-function nestedRecord(value: unknown, key: string): Record<string, unknown> | null {
-  if (!isRecord(value) || !isRecord(value[key])) return null;
-  return value[key] as Record<string, unknown>;
-}
-
-function sumPlayerMetric(
-  statistics: unknown[],
-  section: string,
-  field: string,
-): number | undefined {
-  const values = statistics
-    .map((stat) => numberField(nestedRecord(stat, section)?.[field]))
-    .filter((value): value is number => value !== undefined);
-  return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
-}
-
-function parsePlayerRows(value: unknown, team: string): PlayerSeasonStats[] {
-  if (!Array.isArray(value)) return [];
-  const players: PlayerSeasonStats[] = [];
-  for (const row of value) {
-    if (!isRecord(row) || !isRecord(row.player) || !Array.isArray(row.statistics)) continue;
-    const appearances = sumPlayerMetric(row.statistics, "games", "appearences");
-    if (typeof row.player.id !== "number" || typeof row.player.name !== "string" || !appearances) continue;
-
-    players.push({
-      id: row.player.id,
-      name: row.player.name,
-      team,
-      appearances,
-      goals: sumPlayerMetric(row.statistics, "goals", "total"),
-      shots: sumPlayerMetric(row.statistics, "shots", "total"),
-      shotsOnTarget: sumPlayerMetric(row.statistics, "shots", "on"),
-      foulsCommitted: sumPlayerMetric(row.statistics, "fouls", "committed"),
-      foulsDrawn: sumPlayerMetric(row.statistics, "fouls", "drawn"),
-      yellowCards: sumPlayerMetric(row.statistics, "cards", "yellow"),
-    });
-  }
-  return players;
-}
-
-async function loadTeamPlayerStats(
-  apiKey: string,
-  fixture: FixtureRow,
-  teamId: number,
-  teamName: string,
-): Promise<PlayerSeasonStats[]> {
-  const query = `team=${teamId}&season=${fixture.season}`;
-  const first = await football(`/players?${query}&page=1`, apiKey);
-  const players = parsePlayerRows(first.body.response, teamName);
-  const pageCount = Math.min(first.body.paging?.total ?? 1, 2);
-  if (pageCount > 1) {
-    const second = await football(`/players?${query}&page=2`, apiKey);
-    players.push(...parsePlayerRows(second.body.response, teamName));
-  }
-  return players;
-}
-
 export const predictFixture = createServerFn({ method: "POST" })
   .validator(
     (data: {
@@ -247,8 +176,8 @@ export const predictFixture = createServerFn({ method: "POST" })
       fdKey: string;
       fixture: FixtureRow;
     }) => {
-      if (!data?.apiKey || !data?.geminiKey || !data?.fixture?.id) {
-        throw new Error("Faltan las claves necesarias para consultar y analizar el partido.");
+      if (!data?.apiKey || !data?.geminiKey || !data?.fdKey?.trim() || !data?.fixture?.id) {
+        throw new Error("Faltan las claves de API-Football, Gemini o football-data.org.");
       }
       return data;
     },
@@ -256,22 +185,9 @@ export const predictFixture = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { fixture } = data;
     const code = LEAGUE_CODE[fixture.leagueId];
-    const warnings: string[] = [];
-    let matches: FdMatch[];
-    let formSource: string;
-    if (code && data.fdKey.trim()) {
-      try {
-        matches = await finishedMatches(data.fdKey, code);
-        formSource = "football-data.org, temporada en curso";
-      } catch {
-        matches = await recentApiMatches(data.apiKey, fixture);
-        formSource = "API-Football, últimos 8 partidos";
-        warnings.push("football-data.org no devolvió la forma de esta competición; se usaron los últimos partidos de cada equipo.");
-      }
-    } else {
-      matches = await recentApiMatches(data.apiKey, fixture);
-      formSource = "API-Football, últimos 8 partidos";
-    }
+    if (!code) throw new Error("Esta competición no tiene una fuente de forma reciente configurada.");
+    const matches = await finishedMatches(data.fdKey, code, fixture.season);
+    const formSource = `football-data.org, temporada ${fixture.season}`;
     const brief = {
       match: `${fixture.home} vs ${fixture.away}`,
       league: `${fixture.country} · ${fixture.league}`,
@@ -281,26 +197,11 @@ export const predictFixture = createServerFn({ method: "POST" })
       away: formFrom(matches, fixture.away),
     };
 
-    const [homePlayersResult, awayPlayersResult] = await Promise.allSettled([
-      loadTeamPlayerStats(data.apiKey, fixture, fixture.homeId, fixture.home),
-      loadTeamPlayerStats(data.apiKey, fixture, fixture.awayId, fixture.away),
-    ]);
-    const players = [
-      ...(homePlayersResult.status === "fulfilled" ? homePlayersResult.value : []),
-      ...(awayPlayersResult.status === "fulfilled" ? awayPlayersResult.value : []),
-    ];
-    if (homePlayersResult.status === "rejected") {
-      warnings.push(`No se pudieron consultar las estadísticas de jugadores de ${fixture.home}.`);
-    }
-    if (awayPlayersResult.status === "rejected") {
-      warnings.push(`No se pudieron consultar las estadísticas de jugadores de ${fixture.away}.`);
-    }
     const markets = buildMarketCandidates({
       homeTeam: fixture.home,
       awayTeam: fixture.away,
       homeForm: { played: brief.home.played, goalsFor: brief.home.gf, goalsAgainst: brief.home.ga },
       awayForm: { played: brief.away.played, goalsFor: brief.away.gf, goalsAgainst: brief.away.ga },
-      players,
     });
     const marketContext = markets.map(({ id, title, selection, probability, evidence }) => ({
       id,
@@ -374,71 +275,22 @@ export const predictFixture = createServerFn({ method: "POST" })
     return {
       prediction: parsed,
       brief,
-      warnings,
     };
   });
 
-async function finishedMatches(token: string, code: string) {
-  const cached = fdCache.get(code);
+async function finishedMatches(token: string, code: string, season: number) {
+  const cacheKey = `${code}:${season}`;
+  const cached = fdCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.matches;
-  const res = await fetch(`${FD}/competitions/${code}/matches?status=FINISHED`, {
+  const res = await fetch(`${FD}/competitions/${code}/matches?season=${season}&status=FINISHED`, {
     headers: { "X-Auth-Token": token },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const body = (await res.json()) as { message?: string; matches?: FdMatch[] };
   if (!res.ok) throw new Error(body.message || `football-data.org ${res.status}`);
   const matches = body.matches ?? [];
-  fdCache.set(code, { matches, expiresAt: Date.now() + FD_CACHE_TTL_MS });
+  fdCache.set(cacheKey, { matches, expiresAt: Date.now() + FD_CACHE_TTL_MS });
   return matches;
-}
-
-function parseApiFixtureHistory(value: unknown): FdMatch[] {
-  if (!Array.isArray(value)) return [];
-  const matches: FdMatch[] = [];
-  for (const row of value) {
-    if (!isRecord(row)) continue;
-    const fixture = row.fixture;
-    const teams = row.teams;
-    const goals = row.goals;
-    if (!isRecord(fixture) || !isRecord(teams) || !isRecord(goals)) continue;
-    const home = teams.home;
-    const away = teams.away;
-    if (
-      !isRecord(home) ||
-      !isRecord(away) ||
-      typeof fixture.date !== "string" ||
-      typeof home.name !== "string" ||
-      typeof away.name !== "string" ||
-      typeof goals.home !== "number" ||
-      typeof goals.away !== "number"
-    ) {
-      continue;
-    }
-    matches.push({
-      utcDate: fixture.date,
-      status: "FINISHED",
-      homeTeam: { name: home.name, shortName: home.name },
-      awayTeam: { name: away.name, shortName: away.name },
-      score: { fullTime: { home: goals.home, away: goals.away } },
-    });
-  }
-  return matches;
-}
-
-async function recentApiMatches(apiKey: string, fixture: FixtureRow): Promise<FdMatch[]> {
-  const [home, away] = await Promise.all([
-    football(`/fixtures?team=${fixture.homeId}&last=8`, apiKey),
-    football(`/fixtures?team=${fixture.awayId}&last=8`, apiKey),
-  ]);
-  const unique = new Map<string, FdMatch>();
-  for (const match of [
-    ...parseApiFixtureHistory(home.body.response),
-    ...parseApiFixtureHistory(away.body.response),
-  ]) {
-    const key = `${match.utcDate}|${match.homeTeam?.name}|${match.awayTeam?.name}`;
-    unique.set(key, match);
-  }
-  return [...unique.values()];
 }
 
 function sameTeam(label: string | undefined, query: string) {
