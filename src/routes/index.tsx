@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CircleDot, History, KeyRound, ListChecks } from "lucide-react";
+import { CircleDot, History, KeyRound, ListChecks, Wallet } from "lucide-react";
+import { BetsPanel } from "@/components/bets-panel";
 import { loadFixtures, predictFixture, type Prediction } from "@/lib/football.functions";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -72,7 +73,7 @@ function Home() {
   const [busy, setBusy] = useState<"load" | "predict" | null>(null);
   const [error, setError] = useState("");
   const [results, setResults] = useState<SavedPick[]>([]);
-  const [tab, setTab] = useState<"keys" | "matches" | "history">("matches");
+  const [tab, setTab] = useState<"keys" | "matches" | "history" | "bets">("matches");
 
   useEffect(() => {
     const parsed = readStored<{ footballKey?: string; geminiKey?: string; fdKey?: string; model?: string }>(KEYS);
@@ -190,6 +191,7 @@ function Home() {
     { id: "keys" as const, label: "APIs", Icon: KeyRound },
     { id: "matches" as const, label: "Partidos", Icon: ListChecks },
     { id: "history" as const, label: "Historial", Icon: History },
+    { id: "bets" as const, label: "Apuestas", Icon: Wallet },
   ];
 
   function toggle(id: number) {
@@ -214,7 +216,7 @@ function Home() {
         role="tablist"
         className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:static sm:mb-6 sm:border-0 sm:bg-transparent sm:p-0"
       >
-        <div className="mx-auto grid max-w-3xl grid-cols-3 gap-1 py-2 sm:py-0">
+        <div className="mx-auto grid max-w-3xl grid-cols-4 gap-1 py-2 sm:py-0">
           {tabs.map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -425,6 +427,7 @@ function Home() {
           )}
         </section>
       )}
+      {tab === "bets" && <BetsPanel />}
     </main>
   );
 }

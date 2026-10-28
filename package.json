@@ -8,10 +8,10 @@
   },
   "scripts": {
     "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
-    "dev:local": "vite --config vite.local.config.ts --host 127.0.0.1 --port 5173",
+    "dev:local": "node --env-file-if-exists=.env node_modules/vite/bin/vite.js --config vite.local.config.ts --host 127.0.0.1 --port 5173",
     "build:local": "vite build --config vite.local.config.ts",
     "build": "node scripts/with-app-env.mjs vite build && npm run db:migrate",
-    "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
     "preview": "node scripts/with-app-env.mjs vite preview",
     "preview:restart": "node scripts/preview.mjs restart",
