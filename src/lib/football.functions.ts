@@ -3,87 +3,10 @@ import {
   buildMarketCandidates,
   type MarketCandidate,
 } from "./football-markets";
+import { parseFootballDataFixture, type FixtureRow } from "./football-data-fixtures";
 import { TRACKED_COMPETITION_IDS } from "./football-competitions";
 
-const FOOTBALL = "https://v3.football.api-sports.io";
 const REQUEST_TIMEOUT_MS = 45_000;
-type FixtureRow = {
-  id: number;
-  date: string;
-  leagueId: number;
-  season: number;
-  league: string;
-  country: string;
-  round: string;
-  home: string;
-  away: string;
-  status: string;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseFixture(value: unknown): FixtureRow | null {
-  if (!isRecord(value)) return null;
-  const fixture = value.fixture;
-  const league = value.league;
-  const teams = value.teams;
-  if (!isRecord(fixture) || !isRecord(league) || !isRecord(teams)) return null;
-
-  const home = teams.home;
-  const away = teams.away;
-  const status = fixture.status;
-  if (!isRecord(home) || !isRecord(away)) return null;
-  if (
-    typeof fixture.id !== "number" ||
-    typeof fixture.date !== "string" ||
-    typeof league.id !== "number" ||
-    typeof league.name !== "string" ||
-    typeof home.name !== "string" ||
-    typeof away.name !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    id: fixture.id,
-    date: fixture.date,
-    leagueId: league.id,
-    season:
-      typeof league.season === "number"
-        ? league.season
-        : new Date(fixture.date).getUTCFullYear(),
-    league: league.name,
-    country: typeof league.country === "string" ? league.country : "Desconocido",
-    round: typeof league.round === "string" ? league.round : "",
-    home: home.name,
-    away: away.name,
-    status: isRecord(status) && typeof status.short === "string" ? status.short : "",
-  };
-}
-
-async function football(path: string, key: string) {
-  const res = await fetch(`${FOOTBALL}${path}`, {
-    headers: { "x-apisports-key": key },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  const body = (await res.json()) as {
-    errors?: unknown;
-    response?: unknown;
-    results?: number;
-  };
-  const remaining = res.headers.get("x-ratelimit-requests-remaining");
-  if (!res.ok || (body.errors && Object.keys(body.errors as object).length)) {
-    const msg =
-      typeof body.errors === "object"
-        ? JSON.stringify(body.errors)
-        : `API-Football ${res.status}`;
-    throw new Error(msg);
-  }
-  return { body, remaining };
-}
-
 const FD = "https://api.football-data.org/v4";
 const LEAGUE_CODE: Record<number, string> = {
   39: "PL",
@@ -104,21 +27,93 @@ type FdMatch = {
   score?: { fullTime?: { home?: number | null; away?: number | null } };
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export const loadFixtures = createServerFn({ method: "POST" })
-  .validator((data: { apiKey: string; date: string }) => {
-    if (!data?.apiKey || !/^\d{4}-\d{2}-\d{2}$/.test(data.date ?? "")) {
-      throw new Error("Faltan la key o la fecha.");
+  .validator((data: { fdKey: string; date: string }) => {
+    if (!data?.fdKey?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(data.date ?? "")) {
+      throw new Error("Falta la clave de football-data.org o la fecha.");
     }
     return data;
   })
   .handler(async ({ data }) => {
-    const { body, remaining } = await football(`/fixtures?date=${data.date}`, data.apiKey);
-    const rows = Array.isArray(body.response) ? body.response : [];
+    const res = await fetch(`${FD}/matches?date=${data.date}`, {
+      headers: { "X-Auth-Token": data.fdKey },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const body = (await res.json()) as { message?: string; matches?: unknown[] };
+    if (!res.ok) throw new Error(body.message || `football-data.org ${res.status}`);
+    const rows = body.matches ?? [];
     const fixtures = rows
-      .map(parseFixture)
+      .map(parseFootballDataFixture)
       .filter((fixture): fixture is FixtureRow => fixture !== null && TRACKED_COMPETITION_IDS.has(fixture.leagueId))
       .sort((a, b) => a.date.localeCompare(b.date));
-    return { fixtures, remaining, scanned: rows.length };
+    return { fixtures, scanned: rows.length };
+  });
+
+export type LiveStatus = {
+  fixtureId: number;
+  status: string;
+  checkedAt: string;
+};
+
+type LiveStatusTarget = {
+  id: number;
+  leagueId: number;
+  home: string;
+  away: string;
+};
+
+type FdLiveMatch = {
+  status?: string;
+  competition?: { code?: string };
+  homeTeam?: { name?: string; shortName?: string };
+  awayTeam?: { name?: string; shortName?: string };
+};
+
+export const loadLiveStatuses = createServerFn({ method: "POST" })
+  .validator((data: { fdKey: string; date: string; fixtures: LiveStatusTarget[] }) => {
+    if (
+      !data?.fdKey?.trim() ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(data.date ?? "") ||
+      !Array.isArray(data.fixtures) ||
+      data.fixtures.length === 0 ||
+      data.fixtures.length > 100
+    ) {
+      throw new Error("Faltan datos válidos para consultar los estados de los partidos.");
+    }
+    return data;
+  })
+  .handler(async ({ data }) => {
+    const res = await fetch(`${FD}/matches?date=${data.date}`, {
+      headers: { "X-Auth-Token": data.fdKey },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const body = (await res.json()) as { message?: string; matches?: FdLiveMatch[] };
+    if (!res.ok) throw new Error(body.message || `football-data.org ${res.status}`);
+
+    const trackedCodes = new Set(Object.values(LEAGUE_CODE));
+    const matches = (body.matches ?? []).filter((match) =>
+      trackedCodes.has(match.competition?.code ?? ""),
+    );
+    const checkedAt = new Date().toISOString();
+    const statuses: LiveStatus[] = [];
+
+    for (const target of data.fixtures) {
+      if (!TRACKED_COMPETITION_IDS.has(target.leagueId)) continue;
+      const match = matches.find(
+        (candidate) =>
+          (sameTeam(candidate.homeTeam?.name, target.home) ||
+            sameTeam(candidate.homeTeam?.shortName, target.home)) &&
+          (sameTeam(candidate.awayTeam?.name, target.away) ||
+            sameTeam(candidate.awayTeam?.shortName, target.away)),
+      );
+      if (!match?.status) continue;
+      statuses.push({ fixtureId: target.id, status: match.status, checkedAt });
+    }
+    return { statuses };
   });
 
 export type Prediction = {
@@ -170,14 +165,13 @@ function parsePrediction(value: unknown, candidates: MarketCandidate[]): Predict
 export const predictFixture = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      apiKey: string;
       geminiKey: string;
       model: string;
       fdKey: string;
       fixture: FixtureRow;
     }) => {
-      if (!data?.apiKey || !data?.geminiKey || !data?.fdKey?.trim() || !data?.fixture?.id) {
-        throw new Error("Faltan las claves de API-Football, Gemini o football-data.org.");
+      if (!data?.geminiKey || !data?.fdKey?.trim() || !data?.fixture?.id) {
+        throw new Error("Faltan las claves de Gemini o football-data.org.");
       }
       return data;
     },
@@ -187,11 +181,10 @@ export const predictFixture = createServerFn({ method: "POST" })
     const code = LEAGUE_CODE[fixture.leagueId];
     if (!code) throw new Error("Esta competición no tiene una fuente de forma reciente configurada.");
     const matches = await finishedMatches(data.fdKey, code, fixture.season);
-    const formSource = `football-data.org, temporada ${fixture.season}`;
     const brief = {
       match: `${fixture.home} vs ${fixture.away}`,
       league: `${fixture.country} · ${fixture.league}`,
-      source: formSource,
+      source: `football-data.org, temporada ${fixture.season}`,
       h2h: h2hFrom(matches, fixture.home, fixture.away),
       home: formFrom(matches, fixture.home),
       away: formFrom(matches, fixture.away),
@@ -272,10 +265,7 @@ export const predictFixture = createServerFn({ method: "POST" })
       throw new Error("Gemini devolvió una respuesta que no es JSON válido.");
     }
     const parsed = parsePrediction(response, markets);
-    return {
-      prediction: parsed,
-      brief,
-    };
+    return { prediction: parsed, brief };
   });
 
 async function finishedMatches(token: string, code: string, season: number) {

@@ -1,8 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CircleDot, History, KeyRound, ListChecks, Wallet } from "lucide-react";
+import { CircleDot, History, KeyRound, ListChecks, Trash2, Wallet } from "lucide-react";
 import { BetsPanel } from "@/components/bets-panel";
-import { loadFixtures, predictFixture, type Prediction } from "@/lib/football.functions";
+import {
+  loadFixtures,
+  loadLiveStatuses,
+  predictFixture,
+  type LiveStatus,
+  type Prediction,
+} from "@/lib/football.functions";
+import { isFinishedPick, pruneHistory } from "@/lib/history-retention";
 
 export const Route = createFileRoute("/")({ component: Home });
 
@@ -12,6 +19,7 @@ type SavedPick = {
   fixture: Fixture;
   prediction: Prediction;
   at: string;
+  live?: LiveStatus;
 };
 
 const KEYS = "marcador-keys";
@@ -64,8 +72,28 @@ function isSavedPick(value: unknown): value is SavedPick {
   );
 }
 
+function statusLabel(status: string): string {
+  switch (status) {
+    case "IN_PLAY":
+      return "En juego";
+    case "PAUSED":
+      return "Descanso";
+    case "FINISHED":
+      return "Finalizado";
+    case "POSTPONED":
+      return "Aplazado";
+    case "SUSPENDED":
+      return "Suspendido";
+    case "CANCELLED":
+      return "Cancelado";
+    case "TIMED":
+      return "Programado";
+    default:
+      return "Pendiente";
+  }
+}
+
 function Home() {
-  const [footballKey, setFootballKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [fdKey, setFdKey] = useState("");
   const [model, setModel] = useState("gemini-3.5-flash-lite");
@@ -78,11 +106,24 @@ function Home() {
   const [error, setError] = useState("");
   const [results, setResults] = useState<SavedPick[]>([]);
   const [tab, setTab] = useState<"keys" | "matches" | "history" | "bets">("matches");
+  const today = new Date().toISOString().slice(0, 10);
+  const liveTargets = results
+    .filter((row) => row.fixture.date.slice(0, 10) === today && !isFinishedPick(row))
+    .map((row) => ({
+      id: row.fixture.id,
+      leagueId: row.fixture.leagueId,
+      home: row.fixture.home,
+      away: row.fixture.away,
+    }));
+  const liveTargetSignature = liveTargets.map((target) => target.id).join(",");
 
   useEffect(() => {
-    const parsed = readStored<{ footballKey?: string; geminiKey?: string; fdKey?: string; model?: string }>(KEYS);
+    const parsed = readStored<Record<string, unknown>>(KEYS);
     if (parsed) {
-      setFootballKey(typeof parsed.footballKey === "string" ? parsed.footballKey : "");
+      if ("footballKey" in parsed) {
+        delete parsed.footballKey;
+        writeStored(KEYS, parsed);
+      }
       setGeminiKey(typeof parsed.geminiKey === "string" ? parsed.geminiKey : "");
       setFdKey(typeof parsed.fdKey === "string" ? parsed.fdKey : "");
       if (typeof parsed.model === "string" && parsed.model.trim()) {
@@ -92,11 +133,59 @@ function Home() {
       }
     }
     const picks = readStored<unknown>(CACHE);
-    if (Array.isArray(picks)) setResults(picks.filter(isSavedPick));
+    if (Array.isArray(picks)) {
+      const retained = pruneHistory(picks.filter(isSavedPick));
+      setResults(retained);
+      if (retained.length !== picks.length) writeStored(CACHE, retained);
+    }
   }, []);
 
+  useEffect(() => {
+    if (tab !== "history" || !fdKey.trim() || liveTargets.length === 0) return;
+    let inFlight = false;
+    const refreshScores = async () => {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      try {
+        const { statuses } = await loadLiveStatuses({
+          data: { fdKey: fdKey.trim(), date: today, fixtures: liveTargets },
+        });
+        if (statuses.length === 0) return;
+        const statusesById = new Map(statuses.map((status) => [status.fixtureId, status]));
+        setResults((current) => {
+          let changed = false;
+          const updated = current.map((row) => {
+            const status = statusesById.get(row.fixture.id);
+            if (!status || row.live?.status === status.status) return row;
+            changed = true;
+            return { ...row, live: status };
+          });
+          if (!changed) return current;
+          const retained = pruneHistory(updated);
+          writeStored(CACHE, retained);
+          return retained;
+        });
+      } catch {
+        // Keep the last known score; transient provider errors should not disrupt the history.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshScores();
+    const interval = window.setInterval(() => void refreshScores(), 60_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshScores();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [tab, fdKey, today, liveTargetSignature]);
+
   function saveKeys() {
-    if (writeStored(KEYS, { footballKey, geminiKey, fdKey, model })) {
+    if (writeStored(KEYS, { geminiKey, fdKey, model })) {
       setError("");
       setSaveFeedback({
         message: "Claves guardadas. Se enviarán a sus proveedores cuando hagas consultas.",
@@ -112,7 +201,7 @@ function Home() {
     setBusy("load");
     setNote("");
     try {
-      const data = await loadFixtures({ data: { apiKey: footballKey.trim(), date } });
+      const data = await loadFixtures({ data: { fdKey: fdKey.trim(), date } });
       setFixtures(data.fixtures);
       setPicked([]);
       setNote(
@@ -147,7 +236,6 @@ function Home() {
         try {
           const out = await predictFixture({
             data: {
-              apiKey: footballKey.trim(),
               geminiKey: geminiKey.trim(),
               fdKey: fdKey.trim(),
               model: model.trim(),
@@ -162,8 +250,9 @@ function Home() {
           const idx = next.findIndex((r) => r.fixture.id === id);
           if (idx >= 0) next[idx] = row;
           else next.unshift(row);
-          setResults([...next]);
-          storageFailed = !writeStored(CACHE, next) || storageFailed;
+          const retained = pruneHistory(next);
+          setResults(retained);
+          storageFailed = !writeStored(CACHE, retained) || storageFailed;
           successful += 1;
         } catch (err) {
           failedIds.push(id);
@@ -185,6 +274,22 @@ function Home() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function removePick(id: number) {
+    const row = results.find((pick) => pick.fixture.id === id);
+    if (!row || !window.confirm(`¿Borrar el pronóstico de ${row.fixture.home} vs ${row.fixture.away}?`)) return;
+    const retained = results.filter((pick) => pick.fixture.id !== id);
+    setResults(retained);
+    writeStored(CACHE, retained);
+  }
+
+  function clearFinishedPicks() {
+    const finishedCount = results.filter(isFinishedPick).length;
+    if (finishedCount === 0 || !window.confirm(`¿Eliminar ${finishedCount} pronóstico(s) finalizado(s)?`)) return;
+    const retained = results.filter((pick) => !isFinishedPick(pick));
+    setResults(retained);
+    writeStored(CACHE, retained);
   }
 
   const groups = useMemo(() => {
@@ -251,21 +356,10 @@ function Home() {
           <div>
             <h2 className="font-display text-2xl">APIs</h2>
             <p className="mt-1 text-sm text-muted">
-              API-Football carga partidos y jugadores; Gemini genera pronósticos; football-data.org aporta la forma de la temporada actual.
+              football-data.org proporciona partidos y resultados; Gemini genera los pronósticos usando forma de temporada.
             </p>
           </div>
           <div className="grid gap-4 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2 sm:p-6">
-            <label className="block text-sm font-semibold">
-              API-Football
-              <input
-                type="password"
-                autoComplete="off"
-                value={footballKey}
-                onChange={(e) => setFootballKey(e.target.value)}
-                placeholder="x-apisports-key"
-                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
-              />
-            </label>
             <label className="block text-sm font-semibold">
               Gemini
               <input
@@ -321,9 +415,9 @@ function Home() {
         <section id="matches-panel" role="tabpanel" aria-labelledby="matches-tab" className="space-y-5">
           <div>
             <h2 className="font-display text-2xl">Partidos</h2>
-            {(!footballKey || !geminiKey || !fdKey) && (
+            {(!geminiKey || !fdKey) && (
               <p className="mt-1 text-sm text-muted">
-                Añade las claves de API-Football, Gemini y football-data.org en APIs para generar pronósticos actuales.
+                Añade las claves de Gemini y football-data.org en APIs para cargar partidos y generar pronósticos.
               </p>
             )}
           </div>
@@ -339,7 +433,7 @@ function Home() {
             </label>
             <button
               type="button"
-              disabled={busy !== null || !footballKey}
+              disabled={busy !== null || !fdKey}
               onClick={onLoad}
               className="min-h-12 rounded-xl bg-pitch-deep px-4 py-3 font-semibold text-bg disabled:opacity-50"
             >
@@ -347,7 +441,7 @@ function Home() {
             </button>
             <button
               type="button"
-              disabled={busy !== null || picked.length === 0 || !footballKey || !geminiKey || !fdKey}
+              disabled={busy !== null || picked.length === 0 || !geminiKey || !fdKey}
               onClick={onPredict}
               className="min-h-12 rounded-xl border border-pitch bg-surface px-4 py-3 font-semibold text-pitch disabled:opacity-50"
             >
@@ -356,7 +450,7 @@ function Home() {
           </div>
 
           <p className="text-xs text-muted">
-            La forma se consulta en football-data.org para la temporada del partido. Las estadísticas de jugadores se incluyen solo si API-Football permite acceder a esa temporada; sin datos actuales, se omiten.
+            Los estados de los partidos se actualizan desde football-data.org; su plan gratuito puede mostrarlos con retraso.
           </p>
 
           {note && <p role="status" className="text-sm text-muted">{note}</p>}
@@ -411,7 +505,21 @@ function Home() {
 
       {tab === "history" && (
         <section id="history-panel" role="tabpanel" aria-labelledby="history-tab">
-          <h2 className="font-display text-2xl">Historial</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-display text-2xl">Historial</h2>
+            {results.some(isFinishedPick) && (
+              <button
+                type="button"
+                title="Eliminar pronósticos finalizados"
+                aria-label="Eliminar pronósticos finalizados"
+                onClick={clearFinishedPicks}
+                className="grid size-11 shrink-0 place-items-center rounded-lg border border-line text-muted hover:text-warn"
+              >
+                <Trash2 size={18} />
+              </button>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted">Los estados se actualizan desde football-data.org; pueden mostrarse con retraso.</p>
           {results.length === 0 ? (
             <p className="mt-4 rounded-2xl border border-line bg-surface px-4 py-6 text-sm text-muted">
               Todavía no hay pronósticos guardados.
@@ -420,12 +528,26 @@ function Home() {
             <ul className="mt-4 grid gap-3">
               {results.map((row) => (
                 <li key={row.fixture.id} className="rounded-2xl border border-line bg-surface p-4">
-                  <p className="text-sm text-muted">
-                    {row.fixture.country} · {row.fixture.league}
-                  </p>
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm text-muted">
+                      {row.fixture.country} · {row.fixture.league}
+                    </p>
+                    <button
+                      type="button"
+                      title={`Borrar ${row.fixture.home} vs ${row.fixture.away}`}
+                      aria-label={`Borrar pronóstico de ${row.fixture.home} vs ${row.fixture.away}`}
+                      onClick={() => removePick(row.fixture.id)}
+                      className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:text-warn"
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
                   <p className="font-display text-xl">
                     {row.fixture.home} – {row.fixture.away}
                   </p>
+                  {row.live && (
+                    <p className="mt-1 text-sm font-semibold text-pitch">{statusLabel(row.live.status)}</p>
+                  )}
                   <p className="mt-2 text-lg font-semibold text-pitch">
                     Pick {row.prediction.pick} · confianza {row.prediction.confidence}
                   </p>
