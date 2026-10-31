@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CircleDot, History, KeyRound, ListChecks, Trash2, Wallet } from "lucide-react";
-import { BetsPanel } from "@/components/bets-panel";
+import { CircleDot, History, KeyRound, ListChecks, ListPlus, Trash2, Wallet } from "lucide-react";
+import { BetsPanel, type BetDraft } from "@/components/bets-panel";
 import {
   loadFixtures,
   loadLiveStatuses,
@@ -20,6 +20,12 @@ type SavedPick = {
   prediction: Prediction;
   at: string;
   live?: LiveStatus;
+};
+
+type CombinationLeg = {
+  id: string;
+  event: string;
+  selection: string;
 };
 
 const KEYS = "marcador-keys";
@@ -43,33 +49,75 @@ function writeStored(key: string, value: unknown): boolean {
   }
 }
 
-function isSavedPick(value: unknown): value is SavedPick {
-  if (typeof value !== "object" || value === null) return false;
-  const row = value as Record<string, unknown>;
-  const fixture = row.fixture;
-  const prediction = row.prediction;
-  if (typeof fixture !== "object" || fixture === null || typeof prediction !== "object" || prediction === null) {
-    return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeSavedPick(value: unknown): SavedPick | null {
+  if (!isRecord(value) || !isRecord(value.fixture) || !isRecord(value.prediction)) return null;
+  const fixture = value.fixture;
+  const oldPrediction = value.prediction;
+  if (
+    typeof fixture.id !== "number" ||
+    typeof fixture.date !== "string" ||
+    typeof fixture.home !== "string" ||
+    typeof fixture.away !== "string" ||
+    typeof fixture.league !== "string" ||
+    typeof fixture.country !== "string"
+  ) {
+    return null;
   }
-  const match = fixture as Record<string, unknown>;
-  const pick = prediction as Record<string, unknown>;
-  const probs = pick.probs;
-  return (
-    typeof match.id === "number" &&
-    typeof match.home === "string" &&
-    typeof match.away === "string" &&
-    typeof match.league === "string" &&
-    (pick.pick === "1" || pick.pick === "X" || pick.pick === "2") &&
-    typeof pick.confidence === "number" &&
-    typeof pick.over25 === "number" &&
-    typeof pick.btts === "number" &&
-    typeof pick.reason === "string" &&
-    typeof probs === "object" &&
-    probs !== null &&
-    typeof (probs as Record<string, unknown>).home === "number" &&
-    typeof (probs as Record<string, unknown>).draw === "number" &&
-    typeof (probs as Record<string, unknown>).away === "number"
-  );
+
+  const recommendations: Prediction["recommendations"] = [];
+  if (Array.isArray(oldPrediction.recommendations)) {
+    for (const old of oldPrediction.recommendations) {
+      if (!isRecord(old) || typeof old.selection !== "string") continue;
+      const reason = typeof old.reason === "string"
+        ? old.reason
+        : typeof old.evidence === "string"
+          ? old.evidence
+          : "Opción respaldada por la forma reciente de los equipos.";
+      recommendations.push({
+        id: typeof old.id === "string" ? old.id : `legacy-${recommendations.length}`,
+        title: typeof old.title === "string" ? old.title : "Mercado",
+        selection: old.selection,
+        reason: reason.replace(/\b\d+(?:[.,]\d+)?\s*%/g, "").trim(),
+      });
+      if (recommendations.length === 3) break;
+    }
+  }
+
+  if (recommendations.length === 0 && typeof oldPrediction.pick === "string") {
+    const selection = oldPrediction.pick === "1"
+      ? `Victoria de ${fixture.home}`
+      : oldPrediction.pick === "2"
+        ? `Victoria de ${fixture.away}`
+        : oldPrediction.pick === "X"
+          ? "Empate"
+          : "Resultado del partido";
+    recommendations.push({
+      id: "legacy-result",
+      title: "Resultado",
+      selection,
+      reason: typeof oldPrediction.reason === "string"
+        ? oldPrediction.reason.replace(/\b\d+(?:[.,]\d+)?\s*%/g, "").trim()
+        : "Pronóstico guardado anteriormente.",
+    });
+  }
+
+  const live = isRecord(value.live) && typeof value.live.status === "string"
+    ? {
+        fixtureId: fixture.id,
+        status: value.live.status,
+        checkedAt: typeof value.live.checkedAt === "string" ? value.live.checkedAt : "",
+      }
+    : undefined;
+  return {
+    fixture: fixture as unknown as Fixture,
+    prediction: { recommendations },
+    at: typeof value.at === "string" ? value.at : fixture.date,
+    ...(live ? { live } : {}),
+  };
 }
 
 function statusLabel(status: string): string {
@@ -105,6 +153,8 @@ function Home() {
   const [busy, setBusy] = useState<"load" | "predict" | null>(null);
   const [error, setError] = useState("");
   const [results, setResults] = useState<SavedPick[]>([]);
+  const [combination, setCombination] = useState<CombinationLeg[]>([]);
+  const [betDraft, setBetDraft] = useState<BetDraft | null>(null);
   const [tab, setTab] = useState<"keys" | "matches" | "history" | "bets">("matches");
   const today = new Date().toISOString().slice(0, 10);
   const liveTargets = results
@@ -134,9 +184,12 @@ function Home() {
     }
     const picks = readStored<unknown>(CACHE);
     if (Array.isArray(picks)) {
-      const retained = pruneHistory(picks.filter(isSavedPick));
+      const normalized = picks
+        .map(normalizeSavedPick)
+        .filter((pick): pick is SavedPick => pick !== null);
+      const retained = pruneHistory(normalized);
       setResults(retained);
-      if (retained.length !== picks.length) writeStored(CACHE, retained);
+      if (JSON.stringify(retained) !== JSON.stringify(picks)) writeStored(CACHE, retained);
     }
   }, []);
 
@@ -281,6 +334,8 @@ function Home() {
     if (!row || !window.confirm(`¿Borrar el pronóstico de ${row.fixture.home} vs ${row.fixture.away}?`)) return;
     const retained = results.filter((pick) => pick.fixture.id !== id);
     setResults(retained);
+    setCombination((current) => current.filter((leg) => !leg.id.startsWith(`${id}:`)));
+    setBetDraft(null);
     writeStored(CACHE, retained);
   }
 
@@ -289,7 +344,48 @@ function Home() {
     if (finishedCount === 0 || !window.confirm(`¿Eliminar ${finishedCount} pronóstico(s) finalizado(s)?`)) return;
     const retained = results.filter((pick) => !isFinishedPick(pick));
     setResults(retained);
+    const retainedFixtureIds = new Set(retained.map((pick) => pick.fixture.id));
+    setCombination((current) => current.filter((leg) => {
+      const fixtureId = Number(leg.id.split(":", 1)[0]);
+      return retainedFixtureIds.has(fixtureId);
+    }));
+    setBetDraft(null);
     writeStored(CACHE, retained);
+  }
+
+  function toggleCombinationLeg(row: SavedPick, recommendation: Prediction["recommendations"][number]) {
+    const id = `${row.fixture.id}:${recommendation.id}`;
+    setCombination((current) =>
+      current.some((leg) => leg.id === id)
+        ? current.filter((leg) => leg.id !== id)
+        : [
+            ...current,
+            {
+              id,
+              event: `${row.fixture.home} vs ${row.fixture.away}`,
+              selection: recommendation.selection,
+            },
+          ],
+    );
+        setBetDraft(null);
+  }
+
+  function prepareCombination() {
+    if (combination.length === 0) return;
+    const selection = combination
+      .map((leg, index) => `${index + 1}. ${leg.event}: ${leg.selection}`)
+      .join("\n");
+    if (selection.length > 10_000) {
+      setError("La combinada es demasiado larga; reduce el número de selecciones.");
+      return;
+    }
+    setBetDraft({
+      key: combination.map((leg) => leg.id).join("|"),
+      event: `Combinada · ${combination.length} selección(es)`,
+      selection,
+    });
+    setError("");
+    setTab("bets");
   }
 
   const groups = useMemo(() => {
@@ -505,19 +601,31 @@ function Home() {
 
       {tab === "history" && (
         <section id="history-panel" role="tabpanel" aria-labelledby="history-tab">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-display text-2xl">Historial</h2>
-            {results.some(isFinishedPick) && (
-              <button
-                type="button"
-                title="Eliminar pronósticos finalizados"
-                aria-label="Eliminar pronósticos finalizados"
-                onClick={clearFinishedPicks}
-                className="grid size-11 shrink-0 place-items-center rounded-lg border border-line text-muted hover:text-warn"
-              >
-                <Trash2 size={18} />
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {combination.length > 0 && (
+                <button
+                  type="button"
+                  onClick={prepareCombination}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-pitch px-3 text-sm font-semibold text-bg"
+                >
+                  <ListPlus size={17} />
+                  Preparar combinada ({combination.length})
+                </button>
+              )}
+              {results.some(isFinishedPick) && (
+                <button
+                  type="button"
+                  title="Eliminar pronósticos finalizados"
+                  aria-label="Eliminar pronósticos finalizados"
+                  onClick={clearFinishedPicks}
+                  className="grid size-11 shrink-0 place-items-center rounded-lg border border-line text-muted hover:text-warn"
+                >
+                  <Trash2 size={18} />
+                </button>
+              )}
+            </div>
           </div>
           <p className="mt-1 text-xs text-muted">Los estados se actualizan desde football-data.org; pueden mostrarse con retraso.</p>
           {results.length === 0 ? (
@@ -548,30 +656,32 @@ function Home() {
                   {row.live && (
                     <p className="mt-1 text-sm font-semibold text-pitch">{statusLabel(row.live.status)}</p>
                   )}
-                  <p className="mt-2 text-lg font-semibold text-pitch">
-                    Pick {row.prediction.pick} · confianza {row.prediction.confidence}
-                  </p>
-                  <p className="text-sm">
-                    1 {row.prediction.probs?.home}% · X {row.prediction.probs?.draw}% · 2 {row.prediction.probs?.away}%
-                    {" · "}Over 2.5 {row.prediction.over25}% · BTTS {row.prediction.btts}%
-                  </p>
-                  <p className="mt-2 text-sm text-muted">{row.prediction.reason}</p>
                   {row.prediction.recommendations?.length ? (
                     <div className="mt-4 border-t border-line pt-3">
-                      <h3 className="text-sm font-semibold">Mercados con mejor respaldo</h3>
+                      <h3 className="text-sm font-semibold">Mejor opción</h3>
                       <ul className="mt-2 divide-y divide-line">
-                        {row.prediction.recommendations.map((market) => (
-                          <li key={market.id} className="py-3 first:pt-0 last:pb-0">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold">{market.title}</p>
-                                <p className="text-sm text-pitch">{market.selection}</p>
-                              </div>
-                              <span className="shrink-0 text-sm font-semibold">{market.probability}%</span>
-                            </div>
-                            <p className="mt-1 text-xs text-muted">{market.evidence}</p>
+                        {row.prediction.recommendations.map((recommendation, index) => {
+                          const legId = `${row.fixture.id}:${recommendation.id}`;
+                          const checked = combination.some((leg) => leg.id === legId);
+                          return (
+                          <li key={recommendation.id} className="py-3 first:pt-0 last:pb-0">
+                            {index > 0 && (
+                              <p className="text-xs font-semibold text-muted">Alternativa {index}</p>
+                            )}
+                            <p className="text-sm font-semibold">{recommendation.title}</p>
+                            <p className="text-sm text-pitch">{recommendation.selection}</p>
+                            <p className="mt-1 text-xs text-muted">{recommendation.reason}</p>
+                            <label className="mt-2 inline-flex min-h-11 items-center gap-2 text-sm text-muted">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleCombinationLeg(row, recommendation)}
+                                className="size-4 accent-pitch"
+                              />
+                              Añadir a combinada
+                            </label>
                           </li>
-                        ))}
+                        );})}
                       </ul>
                     </div>
                   ) : (
@@ -585,7 +695,15 @@ function Home() {
           )}
         </section>
       )}
-      {tab === "bets" && <BetsPanel />}
+      {tab === "bets" && (
+        <BetsPanel
+          draft={betDraft}
+          onDraftSaved={() => {
+            setCombination([]);
+            setBetDraft(null);
+          }}
+        />
+      )}
     </main>
   );
 }

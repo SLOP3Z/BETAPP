@@ -74,7 +74,7 @@ export const loadBets = createServerFn({ method: "GET" }).handler(async () => {
 export const addBet = createServerFn({ method: "POST" })
   .validator((data: { event: string; selection: string; odds: number; stake: number }) => {
     const event = text(data?.event, "El partido", 200, true);
-    const selection = text(data?.selection ?? "", "La apuesta", 200, false);
+    const selection = text(data?.selection ?? "", "La apuesta", 10_000, false);
     const odds = Number(data?.odds);
     const stake = Number(data?.stake);
     if (!Number.isFinite(odds) || odds <= 1 || odds > 1000) {

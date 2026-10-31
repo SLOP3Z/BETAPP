@@ -117,49 +117,39 @@ export const loadLiveStatuses = createServerFn({ method: "POST" })
   });
 
 export type Prediction = {
-  pick: "1" | "X" | "2";
-  probs: { home: number; draw: number; away: number };
-  over25: number;
-  btts: number;
-  confidence: number;
-  reason: string;
-  recommendations: MarketCandidate[];
+  recommendations: Array<{
+    id: string;
+    title: string;
+    selection: string;
+    reason: string;
+  }>;
 };
 
 function parsePrediction(value: unknown, candidates: MarketCandidate[]): Prediction {
-  if (!isRecord(value) || !isRecord(value.probs)) {
+  if (!isRecord(value) || !Array.isArray(value.recommendations)) {
     throw new Error("Gemini devolvió un pronóstico con un formato no válido.");
   }
 
-  const { home, draw, away } = value.probs;
-  const percentages = [home, draw, away, value.over25, value.btts, value.confidence];
-  if (
-    (value.pick !== "1" && value.pick !== "X" && value.pick !== "2") ||
-    percentages.some((number) => typeof number !== "number" || !Number.isFinite(number) || number < 0 || number > 100) ||
-    Math.abs((home as number) + (draw as number) + (away as number) - 100) > 1 ||
-    typeof value.reason !== "string"
-  ) {
-    throw new Error("Gemini devolvió un pronóstico incompleto o fuera de rango.");
-  }
-
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-  const recommendationIds = Array.isArray(value.bestMarketIds)
-    ? value.bestMarketIds.filter((id): id is string => typeof id === "string")
-    : [];
-  const recommendations = [...new Set(recommendationIds)]
-    .map((id) => candidateById.get(id))
-    .filter((candidate): candidate is MarketCandidate => candidate !== undefined)
-    .slice(0, 3);
-
-  return {
-    pick: value.pick,
-    probs: { home: home as number, draw: draw as number, away: away as number },
-    over25: value.over25 as number,
-    btts: value.btts as number,
-    confidence: value.confidence as number,
-    reason: value.reason,
-    recommendations,
-  };
+  const recommendations: Prediction["recommendations"] = [];
+  for (const item of value.recommendations) {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.reason !== "string") continue;
+    const candidate = candidateById.get(item.id);
+    if (!candidate) continue;
+    const reason = item.reason
+      .replace(/\b\d+(?:[.,]\d+)?\s*%/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!reason) continue;
+    recommendations.push({
+      id: candidate.id,
+      title: candidate.title,
+      selection: candidate.selection,
+      reason: reason.length > 220 ? `${reason.slice(0, 217).trimEnd()}...` : reason,
+    });
+    if (recommendations.length === 3) break;
+  }
+  return { recommendations };
 }
 
 export const predictFixture = createServerFn({ method: "POST" })
@@ -196,11 +186,10 @@ export const predictFixture = createServerFn({ method: "POST" })
       homeForm: { played: brief.home.played, goalsFor: brief.home.gf, goalsAgainst: brief.home.ga },
       awayForm: { played: brief.away.played, goalsFor: brief.away.gf, goalsAgainst: brief.away.ga },
     });
-    const marketContext = markets.map(({ id, title, selection, probability, evidence }) => ({
+    const marketContext = markets.map(({ id, title, selection, evidence }) => ({
       id,
       title,
       selection,
-      probability,
       evidence,
     }));
 
@@ -216,7 +205,7 @@ export const predictFixture = createServerFn({ method: "POST" })
             {
               parts: [
                 {
-                  text: `Eres un analista de fútbol. Usa exclusivamente los datos recibidos. Devuelve pick (1|X|2), probs {home,draw,away} sumando 100, over25 (0-100), btts (0-100), confidence (0-100), reason (máximo 2 frases en español) y bestMarketIds (hasta 3 IDs elegidos literalmente de candidates). Elige los mercados con mejor respaldo estadístico, con variedad si hay evidencia suficiente. No inventes jugadores, mercados, datos ni IDs. Si los datos no bastan, devuelve una lista vacía. Las probabilidades de candidates son estimaciones, no cuotas ni garantías.\n${JSON.stringify({ brief, candidates: marketContext })}`,
+                  text: `Analiza el partido usando solo los datos recibidos. Devuelve únicamente recommendations: una lista de hasta 3 opciones, ordenadas de mejor a alternativa. Cada opción debe tener id (copiado literalmente de candidates) y reason (una frase breve en español que explique la elección con datos concretos). No devuelvas porcentajes, probabilidades, confianza ni cuotas. No inventes datos, eventos ni IDs. Si no hay una apuesta clara, devuelve la lista vacía.\n${JSON.stringify({ brief, candidates: marketContext })}`,
                 },
               ],
             },
@@ -226,23 +215,19 @@ export const predictFixture = createServerFn({ method: "POST" })
             responseSchema: {
               type: "OBJECT",
               properties: {
-                pick: { type: "STRING", enum: ["1", "X", "2"] },
-                probs: {
-                  type: "OBJECT",
-                  properties: {
-                    home: { type: "NUMBER" },
-                    draw: { type: "NUMBER" },
-                    away: { type: "NUMBER" },
+                recommendations: {
+                  type: "ARRAY",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      id: { type: "STRING" },
+                      reason: { type: "STRING" },
+                    },
+                    required: ["id", "reason"],
                   },
-                  required: ["home", "draw", "away"],
                 },
-                over25: { type: "NUMBER" },
-                btts: { type: "NUMBER" },
-                confidence: { type: "NUMBER" },
-                reason: { type: "STRING" },
-                bestMarketIds: { type: "ARRAY", items: { type: "STRING" } },
               },
-              required: ["pick", "probs", "over25", "btts", "confidence", "reason", "bestMarketIds"],
+              required: ["recommendations"],
             },
             temperature: 0.2,
           },

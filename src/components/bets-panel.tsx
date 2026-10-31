@@ -19,6 +19,17 @@ const STATUS_LABEL: Record<BetStatus, string> = {
 
 const money = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" });
 
+export type BetDraft = {
+  key: string;
+  event: string;
+  selection: string;
+};
+
+type BetsPanelProps = {
+  draft?: BetDraft | null;
+  onDraftSaved?: () => void;
+};
+
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
@@ -27,7 +38,7 @@ function messageOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-export function BetsPanel() {
+export function BetsPanel({ draft = null, onDraftSaved }: BetsPanelProps) {
   const [data, setData] = useState<BetsSnapshot | null>(null);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -61,6 +72,15 @@ export function BetsPanel() {
   useEffect(() => {
     if (data) setBalanceDraft(String(data.initialBalance));
   }, [data]);
+
+  useEffect(() => {
+    if (!draft) return;
+    setEvent(draft.event);
+    setSelection(draft.selection);
+    setOdds("");
+    setStake("");
+    setError("");
+  }, [draft]);
 
   async function run(action: () => Promise<BetsSnapshot>): Promise<boolean> {
     setBusy(true);
@@ -108,8 +128,7 @@ export function BetsPanel() {
       won,
       lost,
       pending,
-      hitRate: settled ? Math.round((won / settled) * 100) : null,
-      roi: settledStake > 0 ? Math.round((net / settledStake) * 1000) / 10 : null,
+      settled,
     };
   }, [bets, initialBalance]);
 
@@ -156,6 +175,7 @@ export function BetsPanel() {
       setSelection("");
       setOdds("");
       setStake("");
+      onDraftSaved?.();
     }
   }
 
@@ -204,7 +224,6 @@ export function BetsPanel() {
                 {stats.net > 0 ? "+" : ""}
                 {money.format(stats.net)}
               </p>
-              {stats.roi !== null && <p className="text-xs text-muted">ROI {stats.roi}%</p>}
             </div>
             <div className="rounded-2xl border border-line bg-surface p-4">
               <p className="text-sm text-muted">Ganadas / Perdidas</p>
@@ -214,7 +233,7 @@ export function BetsPanel() {
                 <span className="text-warn">{stats.lost}</span>
               </p>
               <p className="text-xs text-muted">
-                {stats.hitRate !== null ? `${stats.hitRate}% de acierto` : "Sin cerrar"}
+                {stats.settled > 0 ? `${stats.settled} resueltas` : "Sin apuestas resueltas"}
                 {stats.pending > 0 ? ` · ${stats.pending} pendiente(s)` : ""}
               </p>
             </div>
@@ -247,21 +266,23 @@ export function BetsPanel() {
             className="grid gap-4 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2 sm:p-6"
           >
             <label className="block text-sm font-semibold sm:col-span-2">
-              Partido
+              Partido o combinada
               <input
                 value={event}
                 onChange={(e) => setEvent(e.target.value)}
-                placeholder="Ej. Barcelona – Real Madrid"
+                placeholder="Ej. Combinada · 3 selecciones"
                 className={inputClass}
               />
             </label>
             <label className="block text-sm font-semibold sm:col-span-2">
-              Apuesta / mercado (opcional)
-              <input
+              Selecciones de la apuesta
+              <textarea
+                rows={4}
+                maxLength={10_000}
                 value={selection}
                 onChange={(e) => setSelection(e.target.value)}
-                placeholder="Ej. 1X2: Local, Over 2.5…"
-                className={inputClass}
+                placeholder="Ej. Victoria local; más de 1.5 goles…"
+                className={`${inputClass} resize-y`}
               />
             </label>
             <label className="block text-sm font-semibold">
@@ -309,7 +330,7 @@ export function BetsPanel() {
                 disabled={busy}
                 className="w-full rounded-xl bg-pitch px-4 py-3 font-semibold text-bg disabled:opacity-50 sm:w-auto"
               >
-                Registrar apuesta
+                {draft ? "Registrar combinada" : "Registrar apuesta"}
               </button>
             </div>
           </form>
@@ -327,7 +348,7 @@ export function BetsPanel() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="font-display text-lg">{b.event}</p>
-                        {b.selection && <p className="text-sm text-muted">{b.selection}</p>}
+                        {b.selection && <p className="whitespace-pre-line text-sm text-muted">{b.selection}</p>}
                       </div>
                       <span
                         className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
