@@ -205,7 +205,7 @@ export const predictFixture = createServerFn({ method: "POST" })
             {
               parts: [
                 {
-                  text: `Analiza el partido usando solo los datos recibidos. Devuelve únicamente recommendations: una lista de hasta 3 opciones, ordenadas de mejor a alternativa. Cada opción debe tener id (copiado literalmente de candidates) y reason (una frase breve en español que explique la elección con datos concretos). No devuelvas porcentajes, probabilidades, confianza ni cuotas. No inventes datos, eventos ni IDs. Si no hay una apuesta clara, devuelve la lista vacía.\n${JSON.stringify({ brief, candidates: marketContext })}`,
+                  text: `Analiza el partido usando solo los datos recibidos. Devuelve únicamente recommendations: una lista de hasta 3 opciones, ordenadas de mejor a alternativa. Cada opción debe tener id (copiado literalmente de candidates) y reason (una frase breve en español que explique la elección con datos concretos). Cuando haya datos suficientes, elige las 3 opciones de mercados distintos (goles, 1X2, ambos equipos marcan, tarjetas o remates) en lugar de repetir el mismo mercado. No devuelvas porcentajes, probabilidades, confianza ni cuotas. No inventes datos, eventos ni IDs. Si no hay una apuesta clara, devuelve la lista vacía.\n${JSON.stringify({ brief, candidates: marketContext })}`,
                 },
               ],
             },
@@ -322,4 +322,4 @@ function h2hFrom(matches: FdMatch[], home: string, away: string) {
       const ag = m.score?.fullTime?.away ?? "-";
       return `${m.homeTeam?.name} ${hg}-${ag} ${m.awayTeam?.name}`;
     });
-}
+}
