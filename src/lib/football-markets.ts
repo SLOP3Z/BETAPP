@@ -39,7 +39,6 @@ type BuildMarketOptions = {
 
 const GOAL_LINES = [0.5, 1.5, 2.5, 3.5, 4.5];
 const MIN_MARKET_PROBABILITY = 55;
-const MAX_MARKET_PROBABILITY = 82;
 
 function poissonOverProbability(mean: number, line: number): number {
   if (!Number.isFinite(mean) || mean < 0) return 0;
@@ -70,7 +69,7 @@ function addCandidate(
   candidate: MarketCandidate,
 ): void {
   const min = MIN_PROBABILITY_BY_CATEGORY[candidate.category] ?? MIN_MARKET_PROBABILITY;
-  if (candidate.probability >= min && candidate.probability <= MAX_MARKET_PROBABILITY) {
+  if (candidate.probability >= min) {
     list.push(candidate);
   }
 }
@@ -274,4 +273,24 @@ export function buildMarketCandidates({
   }
 
   return candidates.sort((a, b) => b.probability - a.probability);
+}
+
+export function bestMarketCandidates(candidates: MarketCandidate[]): MarketCandidate[] {
+  const familyFor = (category: MarketCandidate["category"]) => {
+    if (category === "match-result") return "1x2";
+    if (category === "btts") return "btts";
+    if (category === "match-goals" || category === "team-goals") return "goals";
+    return category;
+  };
+  const bestByFamily = new Map<string, MarketCandidate>();
+  for (const candidate of candidates) {
+    const family = familyFor(candidate.category);
+    const current = bestByFamily.get(family);
+    if (!current || candidate.probability > current.probability) {
+      bestByFamily.set(family, candidate);
+    }
+  }
+  return [...bestByFamily.values()]
+    .sort((a, b) => b.probability - a.probability)
+    .slice(0, 3);
 }

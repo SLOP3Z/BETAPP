@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import {
+  bestMarketCandidates,
   buildMarketCandidates,
   type MarketCandidate,
 } from "./football-markets";
@@ -130,25 +131,24 @@ function parsePrediction(value: unknown, candidates: MarketCandidate[]): Predict
     throw new Error("Gemini devolvió un pronóstico con un formato no válido.");
   }
 
-  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-  const recommendations: Prediction["recommendations"] = [];
+  const reasonById = new Map<string, string>();
   for (const item of value.recommendations) {
     if (!isRecord(item) || typeof item.id !== "string" || typeof item.reason !== "string") continue;
-    const candidate = candidateById.get(item.id);
-    if (!candidate) continue;
     const reason = item.reason
       .replace(/\b\d+(?:[.,]\d+)?\s*%/g, "")
       .replace(/\s+/g, " ")
       .trim();
-    if (!reason) continue;
-    recommendations.push({
+    if (reason) reasonById.set(item.id, reason);
+  }
+  const recommendations = candidates.slice(0, 3).map((candidate) => {
+    const reason = reasonById.get(candidate.id) || candidate.evidence;
+    return {
       id: candidate.id,
       title: candidate.title,
       selection: candidate.selection,
       reason: reason.length > 220 ? `${reason.slice(0, 217).trimEnd()}...` : reason,
-    });
-    if (recommendations.length === 3) break;
-  }
+    };
+  });
   return { recommendations };
 }
 
@@ -180,13 +180,14 @@ export const predictFixture = createServerFn({ method: "POST" })
       away: formFrom(matches, fixture.away),
     };
 
-    const markets = buildMarketCandidates({
+    const markets = bestMarketCandidates(buildMarketCandidates({
       homeTeam: fixture.home,
       awayTeam: fixture.away,
-      homeForm: { played: brief.home.played, goalsFor: brief.home.gf, goalsAgainst: brief.home.ga },
-      awayForm: { played: brief.away.played, goalsFor: brief.away.gf, goalsAgainst: brief.away.ga },
-    });
-    const marketContext = markets.map(({ id, title, selection, evidence }) => ({
+      homeForm: brief.home,
+      awayForm: brief.away,
+    }));
+    const marketContext = markets.map(({ id, title, selection, evidence }, index) => ({
+      priority: index + 1,
       id,
       title,
       selection,
@@ -205,7 +206,7 @@ export const predictFixture = createServerFn({ method: "POST" })
             {
               parts: [
                 {
-                  text: `Analiza el partido usando solo los datos recibidos. Devuelve únicamente recommendations: una lista de hasta 3 opciones, ordenadas de mejor a alternativa. Cada opción debe tener id (copiado literalmente de candidates) y reason (una frase breve en español que explique la elección con datos concretos). Cuando haya datos suficientes, elige las 3 opciones de mercados distintos (goles, 1X2, ambos equipos marcan, tarjetas o remates) en lugar de repetir el mismo mercado. No devuelvas porcentajes, probabilidades, confianza ni cuotas. No inventes datos, eventos ni IDs. Si no hay una apuesta clara, devuelve la lista vacía.\n${JSON.stringify({ brief, candidates: marketContext })}`,
+                  text: `Justifica brevemente cada candidato proporcionado, usando solo la forma y la evidencia adjuntas. Devuelve una recommendation por candidato, en el mismo orden, con su id exacto y una frase clara en español. No selecciones mercados nuevos ni cambies el orden. No devuelvas porcentajes, probabilidades, confianza ni cuotas. No inventes datos.\n${JSON.stringify({ brief, candidates: marketContext })}`,
                 },
               ],
             },
@@ -289,6 +290,7 @@ function formFrom(matches: FdMatch[], team: string) {
   let l = 0;
   let gf = 0;
   let ga = 0;
+  let bothScored = 0;
   const lines = rows.map((m) => {
     const home = m.score?.fullTime?.home ?? 0;
     const away = m.score?.fullTime?.away ?? 0;
@@ -297,13 +299,23 @@ function formFrom(matches: FdMatch[], team: string) {
     const opp = isHome ? away : home;
     gf += mine;
     ga += opp;
+    if (home > 0 && away > 0) bothScored += 1;
     if (mine > opp) w += 1;
     else if (mine === opp) d += 1;
     else l += 1;
     const tag = mine > opp ? "G" : mine === opp ? "E" : "P";
     return `${tag} ${m.homeTeam?.shortName ?? m.homeTeam?.name} ${home}-${away} ${m.awayTeam?.shortName ?? m.awayTeam?.name}`;
   });
-  return { played: lines.length, w, d, l, gf, ga, matches: lines };
+  return {
+    played: lines.length,
+    wins: w,
+    draws: d,
+    losses: l,
+    goalsFor: gf,
+    goalsAgainst: ga,
+    bothScored,
+    matches: lines,
+  };
 }
 
 function h2hFrom(matches: FdMatch[], home: string, away: string) {
@@ -322,4 +334,4 @@ function h2hFrom(matches: FdMatch[], home: string, away: string) {
       const ag = m.score?.fullTime?.away ?? "-";
       return `${m.homeTeam?.name} ${hg}-${ag} ${m.awayTeam?.name}`;
     });
-}
+}

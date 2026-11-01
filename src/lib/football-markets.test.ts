@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildMarketCandidates } from "./football-markets.ts";
+import { bestMarketCandidates, buildMarketCandidates, type MarketCandidate } from "./football-markets.ts";
 
 test("builds multiple total-goal lines from recent team form", () => {
   const markets = buildMarketCandidates({
@@ -12,11 +12,7 @@ test("builds multiple total-goal lines from recent team form", () => {
 
   assert.ok(markets.some((market) => market.id === "match-goals-over-1.5"));
   assert.ok(markets.some((market) => market.id === "match-goals-under-3.5"));
-  assert.ok(
-    markets
-      .filter((market) => market.category !== "match-result")
-      .every((market) => market.probability >= 55 && market.probability <= 82),
-  );
+  assert.ok(markets.every((market) => market.probability >= 45));
 });
 
 test("never returns player markets", () => {
@@ -78,4 +74,16 @@ test("candidates are sorted from most to least probable", () => {
   for (let i = 1; i < markets.length; i += 1) {
     assert.ok(markets[i - 1].probability >= markets[i].probability);
   }
+});
+
+test("best options keep one per family and put a stronger 1X2 ahead of goals", () => {
+  const candidates: MarketCandidate[] = [
+    { id: "goal-top", category: "match-goals", title: "Goles totales", selection: "Más de 2.5", probability: 70, evidence: "goles", sampleSize: 8 },
+    { id: "goal-other", category: "team-goals", title: "Goles local", selection: "Más de 1.5", probability: 68, evidence: "local", sampleSize: 8 },
+    { id: "result-top", category: "match-result", title: "1X2", selection: "Gana local", probability: 78, evidence: "victorias", sampleSize: 8 },
+    { id: "btts-top", category: "btts", title: "Ambos marcan", selection: "Sí", probability: 74, evidence: "ambos", sampleSize: 8 },
+  ];
+  const best = bestMarketCandidates(candidates);
+
+  assert.deepEqual(best.map((market) => market.id), ["result-top", "btts-top", "goal-top"]);
 });
