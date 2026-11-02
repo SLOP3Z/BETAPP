@@ -549,7 +549,7 @@ function Home() {
             Los estados de los partidos se actualizan desde football-data.org; su plan gratuito puede mostrarlos con retraso.
           </p>
           <p className="text-xs text-muted">
-            El análisis usa hasta ocho partidos del local en casa y del visitante fuera (mínimo cinco). Filtra 1X2, ambos marcan y Over 2.5; no dispone de cuotas, xG, bajas ni tiros.
+            Usa hasta ocho partidos del local en casa y del visitante fuera. En Champions combina la competición con las ligas nacionales seguidas de esta temporada; con menos de cinco partidos, lo indica como muestra corta. No dispone de cuotas, xG, bajas ni tiros.
           </p>
 
           {note && <p role="status" className="text-sm text-muted">{note}</p>}
@@ -689,7 +689,7 @@ function Home() {
                     </div>
                   ) : (
                     <p className="mt-3 border-t border-line pt-3 text-sm text-muted">
-                      No hay mercados con suficiente muestra para recomendar en este partido.
+                      No hay una ventaja estadística clara para recomendar apuesta en este partido.
                     </p>
                   )}
                 </li>

@@ -90,6 +90,18 @@ test("does not recommend statistical markets with fewer than five venue matches"
   assert.ok(!markets.some((market) => ["match-result", "btts", "match-goals"].includes(market.category)));
 });
 
+test("allows Champions League predictions with two venue matches and labels the short sample", () => {
+  const markets = buildMarketCandidates({
+    ...base,
+    homeForm: { ...homeStrong, played: 2, wins: 2, draws: 0, losses: 0, goalsFor: 4, goalsAgainst: 1, bothScored: 1 },
+    awayForm: { ...awayOpen, played: 2, wins: 0, draws: 1, losses: 1, goalsFor: 1, goalsAgainst: 3, bothScored: 1 },
+    minVenueMatches: 2,
+  });
+
+  assert.ok(markets.length > 0);
+  assert.ok(markets.every((market) => market.evidence.includes("Muestra corta: 2 partidos")));
+});
+
 test("best options return distinct families, ordered by estimated probability", () => {
   const best = bestMarketCandidates(buildMarketCandidates(base));
   assert.ok(best.length <= 3);

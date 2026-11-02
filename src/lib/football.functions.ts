@@ -170,14 +170,32 @@ export const predictFixture = createServerFn({ method: "POST" })
     const { fixture } = data;
     const code = LEAGUE_CODE[fixture.leagueId];
     if (!code) throw new Error("Esta competición no tiene una fuente de forma reciente configurada.");
-    const matches = await finishedMatches(data.fdKey, code, fixture.season);
+    const formCodes = code === "CL" ? Object.values(LEAGUE_CODE) : [code];
+    const loadedGroups = await Promise.allSettled(
+      formCodes.map((formCode) => finishedMatches(data.fdKey, formCode, fixture.season)),
+    );
+    const competitionIndex = formCodes.indexOf(code);
+    const competitionResult = loadedGroups[competitionIndex];
+    if (!competitionResult || competitionResult.status === "rejected") {
+      throw competitionResult?.reason ?? new Error("No se pudo cargar la forma de la competición.");
+    }
+    const competitionMatches = competitionResult.value;
+    const formMatches = code === "CL"
+      ? mergeMatchGroups(
+          loadedGroups
+            .filter((group): group is PromiseFulfilledResult<FdMatch[]> => group.status === "fulfilled")
+            .map((group) => group.value),
+        )
+      : competitionMatches;
     const brief = {
       match: `${fixture.home} vs ${fixture.away}`,
       league: `${fixture.country} · ${fixture.league}`,
-      source: `football-data.org, temporada ${fixture.season}`,
-      h2h: h2hFrom(matches, fixture.home, fixture.away),
-      home: formFrom(matches, fixture.home, "home"),
-      away: formFrom(matches, fixture.away, "away"),
+      source: code === "CL"
+        ? `football-data.org, Champions + ligas seguidas, temporada ${fixture.season}`
+        : `football-data.org, temporada ${fixture.season}`,
+      h2h: h2hFrom(competitionMatches, fixture.home, fixture.away),
+      home: formFrom(formMatches, fixture.home, "home"),
+      away: formFrom(formMatches, fixture.away, "away"),
     };
 
     const markets = bestMarketCandidates(buildMarketCandidates({
@@ -185,6 +203,7 @@ export const predictFixture = createServerFn({ method: "POST" })
       awayTeam: fixture.away,
       homeForm: brief.home,
       awayForm: brief.away,
+      minVenueMatches: fixture.leagueId === 2 ? 2 : 5,
     }));
     const marketContext = markets.map(({ id, title, selection, evidence }, index) => ({
       priority: index + 1,
@@ -267,6 +286,17 @@ async function finishedMatches(token: string, code: string, season: number) {
   const matches = body.matches ?? [];
   fdCache.set(cacheKey, { matches, expiresAt: Date.now() + FD_CACHE_TTL_MS });
   return matches;
+}
+
+function mergeMatchGroups(groups: FdMatch[][]): FdMatch[] {
+  const matches = new Map<string, FdMatch>();
+  for (const group of groups) {
+    for (const match of group) {
+      const key = `${match.utcDate}|${match.homeTeam?.name}|${match.awayTeam?.name}`;
+      matches.set(key, match);
+    }
+  }
+  return [...matches.values()].sort((a, b) => (b.utcDate ?? "").localeCompare(a.utcDate ?? ""));
 }
 
 function sameTeam(label: string | undefined, query: string) {

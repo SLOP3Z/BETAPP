@@ -35,6 +35,7 @@ type BuildMarketOptions = {
   awayTeam: string;
   homeForm: TeamGoalForm;
   awayForm: TeamGoalForm;
+  minVenueMatches?: number;
   /** Opcional: tarjetas por partido del árbitro designado. */
   referee?: { name: string; cards: CountAverage };
   /** Opcional: remates totales por partido de cada equipo (a favor + en contra). */
@@ -108,8 +109,12 @@ function addTotalLines(
   }
 }
 
-function teamExpectedGoals(scored: TeamGoalForm, conceded: TeamGoalForm): number | null {
-  if (scored.played < MIN_FORM_MATCHES || conceded.played < MIN_FORM_MATCHES) return null;
+function teamExpectedGoals(
+  scored: TeamGoalForm,
+  conceded: TeamGoalForm,
+  minVenueMatches: number,
+): number | null {
+  if (scored.played < minVenueMatches || conceded.played < minVenueMatches) return null;
   const scoredRate = scored.goalsFor / scored.played;
   const concededRate = conceded.goalsAgainst / conceded.played;
   return Math.max(0.05, (scoredRate + concededRate) / 2);
@@ -120,15 +125,19 @@ export function buildMarketCandidates({
   awayTeam,
   homeForm,
   awayForm,
+  minVenueMatches = MIN_FORM_MATCHES,
   referee,
   shots,
 }: BuildMarketOptions): MarketCandidate[] {
   const candidates: MarketCandidate[] = [];
-  const homeMean = teamExpectedGoals(homeForm, awayForm);
-  const awayMean = teamExpectedGoals(awayForm, homeForm);
+  const homeMean = teamExpectedGoals(homeForm, awayForm, minVenueMatches);
+  const awayMean = teamExpectedGoals(awayForm, homeForm, minVenueMatches);
 
   const formSample = Math.min(homeForm.played, awayForm.played);
-  const hasVenueSample = homeForm.played >= MIN_FORM_MATCHES && awayForm.played >= MIN_FORM_MATCHES;
+  const hasVenueSample = homeForm.played >= minVenueMatches && awayForm.played >= minVenueMatches;
+  const sampleCaveat = formSample < MIN_FORM_MATCHES
+    ? ` Muestra corta: ${formSample} partidos local/fuera.`
+    : "";
 
   if (hasVenueSample) {
     const homeRate = {
@@ -146,19 +155,19 @@ export function buildMarketCandidates({
         id: "match-result-1",
         selection: `Gana ${homeTeam}`,
         probability: (homeRate.win + awayRate.loss) / 2,
-          evidence: `${homeTeam} ganó ${homeForm.wins} de ${homeForm.played} partidos en casa; ${awayTeam} perdió ${awayForm.losses} de ${awayForm.played} fuera.`,
+          evidence: `${homeTeam} ganó ${homeForm.wins} de ${homeForm.played} partidos en casa; ${awayTeam} perdió ${awayForm.losses} de ${awayForm.played} fuera.${sampleCaveat}`,
       },
       {
         id: "match-result-x",
         selection: "Empate",
         probability: (homeRate.draw + awayRate.draw) / 2,
-        evidence: `En casa, ${homeTeam} empató ${homeForm.draws} de ${homeForm.played}; fuera, ${awayTeam} empató ${awayForm.draws} de ${awayForm.played}.`,
+        evidence: `En casa, ${homeTeam} empató ${homeForm.draws} de ${homeForm.played}; fuera, ${awayTeam} empató ${awayForm.draws} de ${awayForm.played}.${sampleCaveat}`,
       },
       {
         id: "match-result-2",
         selection: `Gana ${awayTeam}`,
         probability: (homeRate.loss + awayRate.win) / 2,
-        evidence: `${awayTeam} ganó ${awayForm.wins} de ${awayForm.played} partidos fuera; ${homeTeam} perdió ${homeForm.losses} de ${homeForm.played} en casa.`,
+        evidence: `${awayTeam} ganó ${awayForm.wins} de ${awayForm.played} partidos fuera; ${homeTeam} perdió ${homeForm.losses} de ${homeForm.played} en casa.${sampleCaveat}`,
       },
     ];
     const resultTotal = outcomes.reduce((sum, outcome) => sum + outcome.probability, 0);
@@ -177,7 +186,7 @@ export function buildMarketCandidates({
     const homeBttsRate = homeForm.bothScored / homeForm.played;
     const awayBttsRate = awayForm.bothScored / awayForm.played;
     const bttsRate = (homeBttsRate + awayBttsRate) / 2;
-    const bttsEvidence = `En casa, ${homeTeam} tuvo ambos-marcan en ${homeForm.bothScored} de ${homeForm.played}; fuera, ${awayTeam} en ${awayForm.bothScored} de ${awayForm.played}.`;
+    const bttsEvidence = `En casa, ${homeTeam} tuvo ambos-marcan en ${homeForm.bothScored} de ${homeForm.played}; fuera, ${awayTeam} en ${awayForm.bothScored} de ${awayForm.played}.${sampleCaveat}`;
     if (homeBttsRate >= 0.6 && awayBttsRate >= 0.6) {
       addCandidate(candidates, {
         id: "btts-yes",
@@ -211,7 +220,7 @@ export function buildMarketCandidates({
         title: "Goles totales",
         selection: "Más de 2.5 goles",
         probability,
-        evidence: `Media esperada ${totalMean.toFixed(2)} goles. ${homeTeam} en casa: ${homeForm.goalsFor} a favor y ${homeForm.goalsAgainst} en contra en ${homeForm.played} partidos; ${awayTeam} fuera: ${awayForm.goalsFor} a favor y ${awayForm.goalsAgainst} en contra en ${awayForm.played}.`,
+        evidence: `Media esperada ${totalMean.toFixed(2)} goles. ${homeTeam} en casa: ${homeForm.goalsFor} a favor y ${homeForm.goalsAgainst} en contra en ${homeForm.played} partidos; ${awayTeam} fuera: ${awayForm.goalsFor} a favor y ${awayForm.goalsAgainst} en contra en ${awayForm.played}.${sampleCaveat}`,
         sampleSize: formSample,
       });
     }
