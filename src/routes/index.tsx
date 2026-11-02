@@ -548,6 +548,9 @@ function Home() {
           <p className="text-xs text-muted">
             Los estados de los partidos se actualizan desde football-data.org; su plan gratuito puede mostrarlos con retraso.
           </p>
+          <p className="text-xs text-muted">
+            El análisis usa hasta ocho partidos del local en casa y del visitante fuera (mínimo cinco). Filtra 1X2, ambos marcan y Over 2.5; no dispone de cuotas, xG, bajas ni tiros.
+          </p>
 
           {note && <p role="status" className="text-sm text-muted">{note}</p>}
           {error && (

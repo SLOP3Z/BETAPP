@@ -176,8 +176,8 @@ export const predictFixture = createServerFn({ method: "POST" })
       league: `${fixture.country} · ${fixture.league}`,
       source: `football-data.org, temporada ${fixture.season}`,
       h2h: h2hFrom(matches, fixture.home, fixture.away),
-      home: formFrom(matches, fixture.home),
-      away: formFrom(matches, fixture.away),
+      home: formFrom(matches, fixture.home, "home"),
+      away: formFrom(matches, fixture.away, "away"),
     };
 
     const markets = bestMarketCandidates(buildMarketCandidates({
@@ -280,9 +280,17 @@ function playedBy(match: FdMatch, team: string) {
   return sameTeam(match.homeTeam?.name, team) || sameTeam(match.homeTeam?.shortName, team) || sameTeam(match.awayTeam?.name, team) || sameTeam(match.awayTeam?.shortName, team);
 }
 
-function formFrom(matches: FdMatch[], team: string) {
+function formFrom(matches: FdMatch[], team: string, venue: "home" | "away") {
   const rows = matches
-    .filter((m) => playedBy(m, team) && m.score?.fullTime?.home != null && m.score.fullTime.away != null)
+    .filter((m) => {
+      const teamIsHome = sameTeam(m.homeTeam?.name, team) || sameTeam(m.homeTeam?.shortName, team);
+      return (
+        playedBy(m, team) &&
+        (venue === "home" ? teamIsHome : !teamIsHome) &&
+        m.score?.fullTime?.home != null &&
+        m.score.fullTime.away != null
+      );
+    })
     .sort((a, b) => (b.utcDate ?? "").localeCompare(a.utcDate ?? ""))
     .slice(0, 8);
   let w = 0;
@@ -291,6 +299,8 @@ function formFrom(matches: FdMatch[], team: string) {
   let gf = 0;
   let ga = 0;
   let bothScored = 0;
+  let winStreak = 0;
+  let streakOpen = true;
   const lines = rows.map((m) => {
     const home = m.score?.fullTime?.home ?? 0;
     const away = m.score?.fullTime?.away ?? 0;
@@ -300,9 +310,13 @@ function formFrom(matches: FdMatch[], team: string) {
     gf += mine;
     ga += opp;
     if (home > 0 && away > 0) bothScored += 1;
-    if (mine > opp) w += 1;
+    if (mine > opp) {
+      w += 1;
+      if (streakOpen) winStreak += 1;
+    }
     else if (mine === opp) d += 1;
     else l += 1;
+    if (mine <= opp) streakOpen = false;
     const tag = mine > opp ? "G" : mine === opp ? "E" : "P";
     return `${tag} ${m.homeTeam?.shortName ?? m.homeTeam?.name} ${home}-${away} ${m.awayTeam?.shortName ?? m.awayTeam?.name}`;
   });
@@ -311,6 +325,7 @@ function formFrom(matches: FdMatch[], team: string) {
     wins: w,
     draws: d,
     losses: l,
+    winStreak,
     goalsFor: gf,
     goalsAgainst: ga,
     bothScored,

@@ -1,14 +1,18 @@
 export type TeamGoalForm = {
   played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  winStreak: number;
   goalsFor: number;
   goalsAgainst: number;
+  bothScored: number;
 };
 
 export type MarketCandidate = {
   id: string;
   category:
     | "match-goals"
-    | "team-goals"
     | "match-result"
     | "btts"
     | "cards"
@@ -37,7 +41,6 @@ type BuildMarketOptions = {
   shots?: { home: CountAverage; away: CountAverage };
 };
 
-const GOAL_LINES = [0.5, 1.5, 2.5, 3.5, 4.5];
 const MIN_MARKET_PROBABILITY = 55;
 
 function poissonOverProbability(mean: number, line: number): number {
@@ -62,7 +65,7 @@ const MIN_PROBABILITY_BY_CATEGORY: Partial<Record<MarketCandidate["category"], n
 };
 const MIN_SAMPLE_CARDS = 5;
 const MIN_SAMPLE_SHOTS = 5;
-const SCORE_MATRIX_SIZE = 11; // marcadores de 0 a 10 goles por equipo
+const MIN_FORM_MATCHES = 5;
 
 function addCandidate(
   list: MarketCandidate[],
@@ -72,37 +75,6 @@ function addCandidate(
   if (candidate.probability >= min) {
     list.push(candidate);
   }
-}
-
-function poissonPmf(mean: number, size: number): number[] {
-  const pmf: number[] = [Math.exp(-mean)];
-  for (let k = 1; k < size; k += 1) pmf.push((pmf[k - 1] * mean) / k);
-  return pmf;
-}
-
-/** 1X2 y ambos marcan a partir de dos Poisson independientes. */
-function scoreMatrixProbabilities(homeMean: number, awayMean: number) {
-  const home = poissonPmf(homeMean, SCORE_MATRIX_SIZE);
-  const away = poissonPmf(awayMean, SCORE_MATRIX_SIZE);
-  let homeWin = 0;
-  let draw = 0;
-  let awayWin = 0;
-  for (let h = 0; h < SCORE_MATRIX_SIZE; h += 1) {
-    for (let a = 0; a < SCORE_MATRIX_SIZE; a += 1) {
-      const p = home[h] * away[a];
-      if (h > a) homeWin += p;
-      else if (h === a) draw += p;
-      else awayWin += p;
-    }
-  }
-  const total = homeWin + draw + awayWin; // normaliza la cola truncada
-  const bttsYes = (1 - home[0]) * (1 - away[0]);
-  return {
-    homeWin: homeWin / total,
-    draw: draw / total,
-    awayWin: awayWin / total,
-    bttsYes,
-  };
 }
 
 function addTotalLines(
@@ -137,7 +109,7 @@ function addTotalLines(
 }
 
 function teamExpectedGoals(scored: TeamGoalForm, conceded: TeamGoalForm): number | null {
-  if (scored.played < 3 || conceded.played < 3) return null;
+  if (scored.played < MIN_FORM_MATCHES || conceded.played < MIN_FORM_MATCHES) return null;
   const scoredRate = scored.goalsFor / scored.played;
   const concededRate = conceded.goalsAgainst / conceded.played;
   return Math.max(0.05, (scoredRate + concededRate) / 2);
@@ -155,90 +127,93 @@ export function buildMarketCandidates({
   const homeMean = teamExpectedGoals(homeForm, awayForm);
   const awayMean = teamExpectedGoals(awayForm, homeForm);
 
-  if (homeMean !== null && awayMean !== null) {
-    const totalMean = homeMean + awayMean;
-    const formSample = Math.min(homeForm.played, awayForm.played);
-    const goalEvidence = `Estimación ${totalMean.toFixed(2)} goles; forma de ${homeForm.played} partidos de ${homeTeam} y ${awayForm.played} de ${awayTeam}.`;
+  const formSample = Math.min(homeForm.played, awayForm.played);
+  const hasVenueSample = homeForm.played >= MIN_FORM_MATCHES && awayForm.played >= MIN_FORM_MATCHES;
 
-    for (const line of GOAL_LINES) {
-      const over = roundPercent(poissonOverProbability(totalMean, line));
+  if (hasVenueSample) {
+    const homeRate = {
+      win: homeForm.wins / homeForm.played,
+      draw: homeForm.draws / homeForm.played,
+      loss: homeForm.losses / homeForm.played,
+    };
+    const awayRate = {
+      win: awayForm.wins / awayForm.played,
+      draw: awayForm.draws / awayForm.played,
+      loss: awayForm.losses / awayForm.played,
+    };
+    const outcomes = [
+      {
+        id: "match-result-1",
+        selection: `Gana ${homeTeam}`,
+        probability: (homeRate.win + awayRate.loss) / 2,
+          evidence: `${homeTeam} ganó ${homeForm.wins} de ${homeForm.played} partidos en casa; ${awayTeam} perdió ${awayForm.losses} de ${awayForm.played} fuera.`,
+      },
+      {
+        id: "match-result-x",
+        selection: "Empate",
+        probability: (homeRate.draw + awayRate.draw) / 2,
+        evidence: `En casa, ${homeTeam} empató ${homeForm.draws} de ${homeForm.played}; fuera, ${awayTeam} empató ${awayForm.draws} de ${awayForm.played}.`,
+      },
+      {
+        id: "match-result-2",
+        selection: `Gana ${awayTeam}`,
+        probability: (homeRate.loss + awayRate.win) / 2,
+        evidence: `${awayTeam} ganó ${awayForm.wins} de ${awayForm.played} partidos fuera; ${homeTeam} perdió ${homeForm.losses} de ${homeForm.played} en casa.`,
+      },
+    ];
+    const resultTotal = outcomes.reduce((sum, outcome) => sum + outcome.probability, 0);
+    for (const outcome of outcomes) {
       addCandidate(candidates, {
-        id: `match-goals-over-${line}`,
-        category: "match-goals",
-        title: "Goles totales",
-        selection: `Más de ${line} goles`,
-        probability: over,
-        evidence: goalEvidence,
-        sampleSize: formSample,
-      });
-      addCandidate(candidates, {
-        id: `match-goals-under-${line}`,
-        category: "match-goals",
-        title: "Goles totales",
-        selection: `Menos de ${line} goles`,
-        probability: 100 - over,
-        evidence: goalEvidence,
-        sampleSize: formSample,
-      });
-    }
-
-    const grid = scoreMatrixProbabilities(homeMean, awayMean);
-    const resultEvidence = `Goles esperados: ${homeTeam} ${homeMean.toFixed(2)} y ${awayTeam} ${awayMean.toFixed(2)}, con forma de ${homeForm.played} y ${awayForm.played} partidos.`;
-    for (const [id, selection, probability] of [
-      ["1", `Gana ${homeTeam}`, grid.homeWin],
-      ["x", "Empate", grid.draw],
-      ["2", `Gana ${awayTeam}`, grid.awayWin],
-    ] as const) {
-      addCandidate(candidates, {
-        id: `match-result-${id}`,
+        id: outcome.id,
         category: "match-result",
-        title: "Ganador del partido (1X2)",
-        selection,
-        probability: roundPercent(probability),
-        evidence: resultEvidence,
+        title: "Resultado 1X2",
+        selection: outcome.selection,
+        probability: roundPercent(outcome.probability / resultTotal),
+        evidence: outcome.evidence,
         sampleSize: formSample,
       });
     }
-    for (const [id, selection, probability] of [
-      ["yes", "Ambos equipos marcan: Sí", grid.bttsYes],
-      ["no", "Ambos equipos marcan: No", 1 - grid.bttsYes],
-    ] as const) {
+
+    const homeBttsRate = homeForm.bothScored / homeForm.played;
+    const awayBttsRate = awayForm.bothScored / awayForm.played;
+    const bttsRate = (homeBttsRate + awayBttsRate) / 2;
+    const bttsEvidence = `En casa, ${homeTeam} tuvo ambos-marcan en ${homeForm.bothScored} de ${homeForm.played}; fuera, ${awayTeam} en ${awayForm.bothScored} de ${awayForm.played}.`;
+    if (homeBttsRate >= 0.6 && awayBttsRate >= 0.6) {
       addCandidate(candidates, {
-        id: `btts-${id}`,
+        id: "btts-yes",
         category: "btts",
         title: "Ambos equipos marcan",
-        selection,
-        probability: roundPercent(probability),
-        evidence: resultEvidence,
+        selection: "Sí",
+        probability: roundPercent(bttsRate),
+        evidence: bttsEvidence,
+        sampleSize: formSample,
+      });
+    } else if (homeBttsRate <= 0.4 && awayBttsRate <= 0.4) {
+      addCandidate(candidates, {
+        id: "btts-no",
+        category: "btts",
+        title: "Ambos equipos marcan",
+        selection: "No",
+        probability: roundPercent(1 - bttsRate),
+        evidence: bttsEvidence,
         sampleSize: formSample,
       });
     }
+  }
 
-    for (const [side, team, mean] of [
-      ["home", homeTeam, homeMean],
-      ["away", awayTeam, awayMean],
-    ] as const) {
-      for (const line of [0.5, 1.5, 2.5, 3.5]) {
-        const over = roundPercent(poissonOverProbability(mean, line));
-        addCandidate(candidates, {
-          id: `team-goals-${side}-over-${line}`,
-          category: "team-goals",
-          title: `${team} · goles del equipo`,
-          selection: `Más de ${line} goles`,
-          probability: over,
-          evidence: `Media estimada: ${mean.toFixed(2)} goles por partido, basada en los últimos ${formSample} partidos disponibles.`,
-          sampleSize: formSample,
-        });
-        addCandidate(candidates, {
-          id: `team-goals-${side}-under-${line}`,
-          category: "team-goals",
-          title: `${team} · goles del equipo`,
-          selection: `Menos de ${line} goles`,
-          probability: 100 - over,
-          evidence: `Media estimada: ${mean.toFixed(2)} goles por partido, basada en los últimos ${formSample} partidos disponibles.`,
-          sampleSize: formSample,
-        });
-      }
+  if (homeMean !== null && awayMean !== null) {
+    const totalMean = homeMean + awayMean;
+    if (totalMean >= 2.8) {
+      const probability = roundPercent(poissonOverProbability(totalMean, 2.5));
+      addCandidate(candidates, {
+        id: "match-goals-over-2.5",
+        category: "match-goals",
+        title: "Goles totales",
+        selection: "Más de 2.5 goles",
+        probability,
+        evidence: `Media esperada ${totalMean.toFixed(2)} goles. ${homeTeam} en casa: ${homeForm.goalsFor} a favor y ${homeForm.goalsAgainst} en contra en ${homeForm.played} partidos; ${awayTeam} fuera: ${awayForm.goalsFor} a favor y ${awayForm.goalsAgainst} en contra en ${awayForm.played}.`,
+        sampleSize: formSample,
+      });
     }
   }
 
@@ -279,7 +254,7 @@ export function bestMarketCandidates(candidates: MarketCandidate[]): MarketCandi
   const familyFor = (category: MarketCandidate["category"]) => {
     if (category === "match-result") return "1x2";
     if (category === "btts") return "btts";
-    if (category === "match-goals" || category === "team-goals") return "goals";
+    if (category === "match-goals") return "goals";
     return category;
   };
   const bestByFamily = new Map<string, MarketCandidate>();
