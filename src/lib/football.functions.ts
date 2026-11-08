@@ -6,6 +6,7 @@ import {
 } from "./football-markets";
 import { parseFootballDataFixture, type FixtureRow } from "./football-data-fixtures";
 import { TRACKED_COMPETITION_IDS } from "./football-competitions";
+import { sameTeam } from "./team-match";
 
 const REQUEST_TIMEOUT_MS = 45_000;
 const FD = "https://api.football-data.org/v4";
@@ -196,6 +197,9 @@ export const predictFixture = createServerFn({ method: "POST" })
       h2h: h2hFrom(competitionMatches, fixture.home, fixture.away),
       home: formFrom(formMatches, fixture.home, "home"),
       away: formFrom(formMatches, fixture.away, "away"),
+      // Forma actual: últimos 5 partidos de cada equipo, en casa o fuera.
+      homeRecent: formFrom(formMatches, fixture.home, "any", 5),
+      awayRecent: formFrom(formMatches, fixture.away, "any", 5),
     };
 
     const markets = bestMarketCandidates(buildMarketCandidates({
@@ -299,30 +303,28 @@ function mergeMatchGroups(groups: FdMatch[][]): FdMatch[] {
   return [...matches.values()].sort((a, b) => (b.utcDate ?? "").localeCompare(a.utcDate ?? ""));
 }
 
-function sameTeam(label: string | undefined, query: string) {
-  const a = (label ?? "").toLowerCase();
-  const b = query.toLowerCase();
-  if (!a || !b) return false;
-  return a.includes(b) || b.includes(a) || a.split(" ").pop() === b.split(" ").pop();
-}
-
 function playedBy(match: FdMatch, team: string) {
   return sameTeam(match.homeTeam?.name, team) || sameTeam(match.homeTeam?.shortName, team) || sameTeam(match.awayTeam?.name, team) || sameTeam(match.awayTeam?.shortName, team);
 }
 
-function formFrom(matches: FdMatch[], team: string, venue: "home" | "away") {
+function formFrom(
+  matches: FdMatch[],
+  team: string,
+  venue: "home" | "away" | "any",
+  limit = 8,
+) {
   const rows = matches
     .filter((m) => {
       const teamIsHome = sameTeam(m.homeTeam?.name, team) || sameTeam(m.homeTeam?.shortName, team);
       return (
         playedBy(m, team) &&
-        (venue === "home" ? teamIsHome : !teamIsHome) &&
+        (venue === "any" || (venue === "home" ? teamIsHome : !teamIsHome)) &&
         m.score?.fullTime?.home != null &&
         m.score.fullTime.away != null
       );
     })
     .sort((a, b) => (b.utcDate ?? "").localeCompare(a.utcDate ?? ""))
-    .slice(0, 8);
+    .slice(0, limit);
   let w = 0;
   let d = 0;
   let l = 0;
