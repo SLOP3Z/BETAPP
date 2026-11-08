@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { CircleDot, History, KeyRound, ListChecks, ListPlus, Trash2, Wallet } from "lucide-react";
 import { BetsPanel, type BetDraft } from "@/components/bets-panel";
+import { MatchAnalysisPanel } from "@/components/match-analysis-panel";
 import {
   loadFixtures,
   loadLiveStatuses,
@@ -10,6 +11,7 @@ import {
   type Prediction,
 } from "@/lib/football.functions";
 import { isFinishedPick, pruneHistory } from "@/lib/history-retention";
+import { parseStoredAnalysis, type MatchAnalysis } from "@/lib/match-analysis";
 
 export const Route = createFileRoute("/")({ component: Home });
 
@@ -18,6 +20,7 @@ type Fixture = Awaited<ReturnType<typeof loadFixtures>>["fixtures"][number];
 type SavedPick = {
   fixture: Fixture;
   prediction: Prediction;
+  analysis?: MatchAnalysis;
   at: string;
   live?: LiveStatus;
 };
@@ -105,6 +108,7 @@ function normalizeSavedPick(value: unknown): SavedPick | null {
     });
   }
 
+  const analysis = parseStoredAnalysis(value.analysis);
   const live = isRecord(value.live) && typeof value.live.status === "string"
     ? {
         fixtureId: fixture.id,
@@ -115,6 +119,7 @@ function normalizeSavedPick(value: unknown): SavedPick | null {
   return {
     fixture: fixture as unknown as Fixture,
     prediction: { recommendations },
+    ...(analysis ? { analysis } : {}),
     at: typeof value.at === "string" ? value.at : fixture.date,
     ...(live ? { live } : {}),
   };
@@ -298,6 +303,7 @@ function Home() {
           const row: SavedPick = {
             fixture,
             prediction: out.prediction,
+            analysis: out.analysis,
             at: new Date().toISOString(),
           };
           const idx = next.findIndex((r) => r.fixture.id === id);
@@ -658,6 +664,9 @@ function Home() {
                   </p>
                   {row.live && (
                     <p className="mt-1 text-sm font-semibold text-pitch">{statusLabel(row.live.status)}</p>
+                  )}
+                  {row.analysis && (
+                    <MatchAnalysisPanel fixture={row.fixture} analysis={row.analysis} />
                   )}
                   {row.prediction.recommendations?.length ? (
                     <div className="mt-4 border-t border-line pt-3">

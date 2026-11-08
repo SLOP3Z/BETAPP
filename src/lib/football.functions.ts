@@ -7,6 +7,7 @@ import {
 import { parseFootballDataFixture, type FixtureRow } from "./football-data-fixtures";
 import { TRACKED_COMPETITION_IDS } from "./football-competitions";
 import { sameTeam } from "./team-match";
+import { buildMatchAnalysis } from "./match-analysis";
 
 const REQUEST_TIMEOUT_MS = 45_000;
 const FD = "https://api.football-data.org/v4";
@@ -202,13 +203,22 @@ export const predictFixture = createServerFn({ method: "POST" })
       awayRecent: formFrom(formMatches, fixture.away, "any", 5),
     };
 
+    const minVenueMatches = fixture.leagueId === 2 ? 2 : 5;
     const markets = bestMarketCandidates(buildMarketCandidates({
       homeTeam: fixture.home,
       awayTeam: fixture.away,
       homeForm: brief.home,
       awayForm: brief.away,
-      minVenueMatches: fixture.leagueId === 2 ? 2 : 5,
+      minVenueMatches,
     }));
+    const analysis = buildMatchAnalysis({
+      homeForm: brief.home,
+      awayForm: brief.away,
+      minVenueMatches,
+      competitionMatches,
+      homeRecentLines: brief.homeRecent.matches,
+      awayRecentLines: brief.awayRecent.matches,
+    });
     const marketContext = markets.map(({ id, title, selection, evidence }, index) => ({
       priority: index + 1,
       id,
@@ -274,7 +284,7 @@ export const predictFixture = createServerFn({ method: "POST" })
       throw new Error("Gemini devolvió una respuesta que no es JSON válido.");
     }
     const parsed = parsePrediction(response, markets);
-    return { prediction: parsed, brief };
+    return { prediction: parsed, brief, analysis };
   });
 
 async function finishedMatches(token: string, code: string, season: number) {

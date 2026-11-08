@@ -44,7 +44,7 @@ type BuildMarketOptions = {
 
 const MIN_MARKET_PROBABILITY = 55;
 
-function poissonOverProbability(mean: number, line: number): number {
+export function poissonOverProbability(mean: number, line: number): number {
   if (!Number.isFinite(mean) || mean < 0) return 0;
   const firstOver = Math.floor(line) + 1;
   let probabilityUnder = Math.exp(-mean);
@@ -109,7 +109,7 @@ function addTotalLines(
   }
 }
 
-function teamExpectedGoals(
+export function teamExpectedGoals(
   scored: TeamGoalForm,
   conceded: TeamGoalForm,
   minVenueMatches: number,
