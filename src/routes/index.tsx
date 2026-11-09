@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CircleDot, History, KeyRound, ListChecks, ListPlus, Trash2, Wallet } from "lucide-react";
 import { BetsPanel, type BetDraft } from "@/components/bets-panel";
 import { MatchAnalysisPanel } from "@/components/match-analysis-panel";
+import { TennisPanel } from "@/components/tennis-panel";
 import {
   loadFixtures,
   loadLiveStatuses,
@@ -149,6 +150,7 @@ function statusLabel(status: string): string {
 function Home() {
   const [geminiKey, setGeminiKey] = useState("");
   const [fdKey, setFdKey] = useState("");
+  const [rapidKey, setRapidKey] = useState("");
   const [model, setModel] = useState("gemini-3.5-flash-lite");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
@@ -181,6 +183,7 @@ function Home() {
       }
       setGeminiKey(typeof parsed.geminiKey === "string" ? parsed.geminiKey : "");
       setFdKey(typeof parsed.fdKey === "string" ? parsed.fdKey : "");
+      setRapidKey(typeof parsed.rapidKey === "string" ? parsed.rapidKey : "");
       if (typeof parsed.model === "string" && parsed.model.trim()) {
         setModel(
           parsed.model === "gemini-2.5-flash-lite" ? "gemini-3.5-flash-lite" : parsed.model,
@@ -243,7 +246,7 @@ function Home() {
   }, [tab, fdKey, today, liveTargetSignature]);
 
   function saveKeys() {
-    if (writeStored(KEYS, { geminiKey, fdKey, model })) {
+    if (writeStored(KEYS, { geminiKey, fdKey, rapidKey, model })) {
       setError("");
       setSaveFeedback({
         message: "Claves guardadas. Se enviarán a sus proveedores cuando hagas consultas.",
@@ -485,6 +488,17 @@ function Home() {
               />
             </label>
             <label className="block text-sm font-semibold sm:col-span-2">
+              RapidAPI (Tennis API, para el tenis)
+              <input
+                type="password"
+                autoComplete="off"
+                value={rapidKey}
+                onChange={(e) => setRapidKey(e.target.value)}
+                placeholder="X-RapidAPI-Key"
+                className="mt-1 w-full rounded-xl border border-line bg-bg px-3 py-3"
+              />
+            </label>
+            <label className="block text-sm font-semibold sm:col-span-2">
               Modelo Gemini
               <input
                 value={model}
@@ -605,6 +619,7 @@ function Home() {
               ))}
             </div>
           )}
+          <TennisPanel rapidKey={rapidKey} date={date} />
         </section>
       )}
 
